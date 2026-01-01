@@ -5,6 +5,7 @@ from discord.ext import commands
 from cogs.questions._shared._base_prompt_view import BasePromptView
 from cogs.questions._shared._config import API_API, RATING_CHOICES
 from cogs.questions._shared._http import api_get
+from cogs._help_registry import HelpEntry
 
 async def fetch_paranoia(bot, rating: str) -> dict:
     return await api_get(bot, API_API, "/paranoia", rating=rating)
@@ -36,6 +37,23 @@ class ParanoiaView(BasePromptView):
 
 
 class Paranoia(commands.Cog):
+    HELP_ENTRIES = [
+    HelpEntry(
+        name="paranoia",
+        summary="Paranoia questions with an “Another” button",
+        category="Games",
+        examples=[
+            "/paranoia",
+            "/paranoia rating:PG",
+            "/paranoia lock:true"
+        ],
+        show_in_help=True,
+        options_help={
+            "rating": "Filter question rating (Any/PG/PG-13/R)",
+            "lock": "true = only you can press the button"
+        }
+    )
+    ]
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 

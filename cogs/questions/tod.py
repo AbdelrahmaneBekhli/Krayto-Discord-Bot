@@ -5,6 +5,7 @@ from discord.ext import commands
 from cogs.questions._shared._base_prompt_view import BasePromptView
 from cogs.questions._shared._config import API_API, RATING_CHOICES
 from cogs.questions._shared._http import api_get
+from cogs._help_registry import HelpEntry
 
 async def fetch_tod(bot, kind: str, rating: str) -> dict:
     # kind = "truth" or "dare"
@@ -39,6 +40,19 @@ class TODView(BasePromptView):
 
     # Command
 class TOD(commands.Cog):
+    HELP_ENTRIES = [
+        HelpEntry(
+            name="tod",
+            summary="Truth / Dare / Random buttons",
+            category="Games",
+            examples=["/tod", "/tod rating:PG lock:true"],
+            show_in_help=True,
+            options_help={
+                "rating": "Choose the content rating: Any, PG, PG-13, R",
+                "lock": "Lock buttons so only you can press them (true/false)"
+            }
+        )
+    ]
     def __init__(self, bot):
         self.bot = bot
 

@@ -5,6 +5,7 @@ from discord.ext import commands
 from cogs.questions._shared._base_prompt_view import BasePromptView
 from cogs.questions._shared._config import API_API, RATING_CHOICES
 from cogs.questions._shared._http import api_get
+from cogs._help_registry import HelpEntry
 
 async def fetch_prompt(bot, kind: str, rating: str) -> dict:
     # kind = "nhie" or "wyr"
@@ -46,6 +47,23 @@ class NHIEWYRView(BasePromptView):
 
     # Command
 class NHIEWYR(commands.Cog):
+    HELP_ENTRIES = [
+    HelpEntry(
+        name="nhie_wyr",
+        summary="Never Have I Ever & Would You Rather buttons",
+        category="Games",
+        examples=[
+            "/nhie_wyr",
+            "/nhie_wyr rating:Any",
+            "/nhie_wyr rating:PG lock:true"
+        ],
+        show_in_help=True,
+        options_help={
+            "rating": "Choose the content rating: Any, PG, PG-13, R",
+            "lock": "Lock buttons so only you can press them (true/false)"
+        }
+    )
+    ]
     def __init__(self, bot): self.bot = bot
 
     @app_commands.command(name="nhie_wyr", description="Never Have I Ever / Would You Rather")
