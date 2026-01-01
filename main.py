@@ -26,6 +26,7 @@ class MyBot(commands.Bot):
         await self.load_extension("cogs.questions.tod")
         await self.load_extension("cogs.questions.nhie_wyr")
         await self.load_extension("cogs.questions.paranoia")
+        await self.load_extension("cogs.help")
 
         # Sync slash commands (global)
         await self.tree.sync()
