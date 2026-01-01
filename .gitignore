@@ -1,0 +1,39 @@
+# =====================
+# Python
+# =====================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# =====================
+# Environment variables
+# =====================
+.env
+.env.*
+!.env.example
+
+# =====================
+# OS / Editor junk
+# =====================
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# =====================
+# Logs
+# =====================
+*.log
+
+# =====================
+# Discord / runtime
+# =====================
+*.sqlite3
