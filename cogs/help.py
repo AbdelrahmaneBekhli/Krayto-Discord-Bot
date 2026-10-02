@@ -95,9 +95,11 @@ class Help(commands.Cog):
                 )
 
             desc = meta.summary if meta else (cmd.description if cmd else "")
+            if meta and meta.details:
+                desc = f"{desc}\n\n{meta.details.strip()}"
             embed = discord.Embed(
                 title=f"Help • /{name}",
-                description=desc or "No description",
+                description=(desc or "No description")[:4096],
             )
 
             if meta and meta.examples:

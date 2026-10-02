@@ -707,9 +707,34 @@ class Mafia(commands.Cog):
             name="mafia",
             summary="Social deduction: find the Mafia before they outnumber the town",
             category="Games",
-            examples=["/mafia"],
+            examples=[
+                "/mafia  — then everyone taps Join",
+                "Roles → 2 Mafia, 1 Detective, 1 Doctor  (good for 7–9)",
+                "Roles → 1 Mafia, 1 Detective, 0 Doctor  (fast 4–5 player game)",
+            ],
             show_in_help=True,
-            options_help={},
+            details=(
+                "**4+ players.** The Mafia know each other. Nobody else knows anything.\n\n"
+                "**1. Lobby** — everyone taps **Join**. The host taps **Roles** to pick how "
+                "many Mafia, Detective, Doctor and Police to deal; everyone left over is a "
+                "Villager. Then **Start**, and everyone taps **Reveal my role** — only you "
+                "can see yours.\n\n"
+                "**2. Night** 🌙 — tap **My night action** for a private menu:\n"
+                "🔪 **Mafia** choose someone to eliminate (your team shares one target)\n"
+                "🔍 **Detective** investigate someone — you learn if they're Mafia\n"
+                "💉 **Doctor** protect someone from being killed, including yourself\n"
+                "🚔 **Police** detain someone — they can't act and can't be killed\n"
+                "🧑‍🌾 **Villager** no action, just sit tight\n"
+                "Night resolves as soon as everyone has acted.\n\n"
+                "**3. Day** ☀️ — the bot says who died and what they were. Talk, accuse, "
+                "defend. When you're ready the host taps **Start the vote**.\n\n"
+                "**4. Vote** 🗳️ — everyone alive votes privately. Most votes is eliminated "
+                "and their role is revealed. **A tie eliminates nobody.** Then night falls "
+                "again.\n\n"
+                "**Winning** — the Town wins when every Mafia is gone. The Mafia win the "
+                "moment they equal the rest of the town.\n\n"
+                "-# The dead can still read the channel, so no hints once you're out."
+            ),
         )
     ]
 

@@ -336,8 +336,33 @@ class Wavelength(commands.Cog):
             name="wavelength",
             summary="Guess where a secret spot sits on a scale, from one clue",
             category="Games",
-            examples=["/wavelength"],
+            examples=[
+                "/wavelength  — then everyone taps Join",
+                "Scale: Underrated ◀▶ Overrated · spot 9 · clue “pineapple on pizza”",
+                "Scale: Cold ◀▶ Hot · spot 2 · clue “a forgotten cup of tea”",
+            ],
             show_in_help=True,
+            details=(
+                "**3+ players.** One player knows the answer and has to get it across in "
+                "one word.\n\n"
+                "**1. Lobby** — everyone taps **Join**, the host taps **Start**.\n\n"
+                "**2. The Psychic** 🔮 — one player per round. They tap the button and "
+                "privately see a scale, like **Boring ◀━━▶ Exciting**, and a secret spot "
+                "from **1 to 10**. They then write one clue that sits exactly on that spot. "
+                "No numbers, no pointing, no 'a bit left of'.\n\n"
+                "**3. Everyone else** 🎯 — tap **Guess** and privately pick a band from "
+                "1 to 10. You can change it right up until the reveal.\n\n"
+                "**4. Reveal** 👀 — the host or the Psychic reveals the spot and everyone "
+                "scores:\n"
+                "🎯 exact band — **4 points**\n"
+                "✨ one off — **2 points**\n"
+                "• two off — **1 point**\n"
+                "further — nothing\n\n"
+                "The **Psychic scores the average of their guessers**, so a clue that lands "
+                "the whole room beats a clever one only your best friend gets.\n\n"
+                "Everyone is Psychic exactly once, then the final scores go up. "
+                "45 different scales, and a game never repeats one."
+            ),
         )
     ]
 
