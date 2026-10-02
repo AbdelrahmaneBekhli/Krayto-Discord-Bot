@@ -27,6 +27,7 @@ Vault for the Truth-or-Dare style Discord bot in this repo. The vault **is** the
 - [[Backlog]] — ideas, ranked
 - [[Known Gaps]] — accepted weaknesses and traps
 - [[Changelog]] — what actually shipped
+- [[Branding]] — the avatar, and the directions that were rejected
 
 ## Stack
 | Thing | Version |
