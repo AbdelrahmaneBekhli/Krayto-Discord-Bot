@@ -9,20 +9,16 @@ from discord.ext import commands
 
 from cogs._help_registry import HelpEntry
 
-# Rough feel thresholds in milliseconds, worst-first when picking a verdict.
-_BANDS = (
-    (150.0, "🟢", "great", discord.Colour.green()),
-    (300.0, "🟡", "okay", discord.Colour.gold()),
-    (math.inf, "🔴", "a bit slow", discord.Colour.red()),
-)
+# Rough feel thresholds in milliseconds.
+_BANDS = ((150.0, "🟢"), (300.0, "🟡"), (math.inf, "🔴"))
 
 
-def _band(ms: float):
-    """Pick the (emoji, word, colour) band a latency falls into."""
-    for limit, emoji, word, colour in _BANDS:
+def _dot(ms: float) -> str:
+    """Green/amber/red dot for a latency, so health reads at a glance."""
+    for limit, emoji in _BANDS:
         if ms < limit:
-            return emoji, word, colour
-    return _BANDS[-1][1:]
+            return emoji
+    return _BANDS[-1][1]
 
 
 class General(commands.Cog):
@@ -48,40 +44,18 @@ class General(commands.Cog):
         await interaction.response.send_message("Pinging…")
         reply_ms = (time.perf_counter() - start) * 1000
 
-        # bot.latency is the gateway heartbeat round-trip. It refreshes once
-        # per heartbeat (~41s), so repeated pings in one window read the same
-        # cached number by design.
-        gateway = self.bot.latency * 1000 if math.isfinite(self.bot.latency) else None
-
-        reply_emoji, reply_word, reply_colour = _band(reply_ms)
-        if gateway is None:
-            conn_emoji, conn_value = "⚪", "starting up…"
-            verdict, colour = reply_word, reply_colour
-            worst = reply_ms
+        # bot.latency is the gateway heartbeat round-trip, cached and only
+        # refreshed every ~41s, and nan until the first heartbeat lands.
+        latency = self.bot.latency
+        if math.isfinite(latency):
+            gateway_ms = latency * 1000
+            connection = f"{_dot(gateway_ms)} connection **{gateway_ms:.0f}ms**"
         else:
-            conn_emoji, _, _ = _band(gateway)
-            conn_value = f"**{gateway:.0f}ms**"
-            worst = max(gateway, reply_ms)
-            _, verdict, colour = _band(worst)
+            connection = "⚪ connection **starting up**"
 
-        embed = discord.Embed(
-            title="Pong! 🏓",
-            description=f"I'm online and things are looking **{verdict}**.",
-            colour=colour,
+        await interaction.edit_original_response(
+            content=f"Pong! 🏓  {connection}  ·  {_dot(reply_ms)} reply **{reply_ms:.0f}ms**"
         )
-        embed.add_field(
-            name=f"{conn_emoji} Connection",
-            value=f"{conn_value}\nMy link to Discord",
-            inline=True,
-        )
-        embed.add_field(
-            name=f"{reply_emoji} Reply speed",
-            value=f"**{reply_ms:.0f}ms**\nHow long this reply took",
-            inline=True,
-        )
-        embed.set_footer(text="Connection is only checked every ~40s, so it changes slowly.")
-
-        await interaction.edit_original_response(content=None, embed=embed)
 
 
 async def setup(bot: commands.Bot) -> None:
