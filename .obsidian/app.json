@@ -1,0 +1,13 @@
+{
+  "newFileFolderPath": "notes",
+  "newLinkFormat": "shortest",
+  "useMarkdownLinks": false,
+  "attachmentFolderPath": "notes/_attachments",
+  "alwaysUpdateLinks": true,
+  "showUnsupportedFiles": false,
+  "userIgnoreFilters": [
+    ".venv/",
+    ".git/",
+    "__pycache__/"
+  ]
+}
