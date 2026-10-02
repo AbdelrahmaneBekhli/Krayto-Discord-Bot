@@ -45,6 +45,8 @@ Thumbs.db
 # Vault config IS committed so the setup travels with the repo.
 # These are per-machine UI state and would conflict constantly.
 .obsidian/workspace.json
+# Created if '.obsidian' itself is picked in 'Open folder as vault'.
+.obsidian/.obsidian/
 .obsidian/workspace-mobile.json
 .obsidian/cache
 notes/_attachments/
