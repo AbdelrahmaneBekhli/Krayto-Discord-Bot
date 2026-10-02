@@ -15,10 +15,13 @@ Vault for the Truth-or-Dare style Discord bot in this repo. The vault **is** the
 - [[Shared HTTP Session]] — the one `aiohttp` session and its error contract
 - [[Base Prompt View]] — buttons, the owner lock, timeouts
 - [[Help Registry]] — how `/help` discovers commands
+- [[Game Framework]] — lobby, per-channel registry, the button-to-ephemeral rule
 - [[Truth or Dare API]] — the upstream API contract
 
 ## Commands
-- [[tod]] · [[nhie_wyr]] · [[paranoia]] · [[help]] · [[ping]]
+- Prompts: [[tod]] · [[nhie_wyr]] · [[paranoia]]
+- Party games: [[mafia]] · [[wavelength]]
+- Utility: [[help]] · [[ping]]
 
 ## Planning
 - [[Backlog]] — ideas, ranked
@@ -37,4 +40,5 @@ Entry point is [main.py](main.py). Dependencies pinned in [requirements.txt](req
 ## Conventions
 - Slash commands only — no message-content intent, no prefix commands.
 - Anything that makes a network call **defers the interaction first**. See [[Interaction Timing]].
+- Anything private goes **button → ephemeral**, never a DM. See [[Game Framework]].
 - Cogs never build their own HTTP session; they use `bot.session`.

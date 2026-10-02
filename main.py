@@ -19,6 +19,7 @@ EXTENSIONS = (
     "cogs.questions.nhie_wyr",
     "cogs.questions.paranoia",
     "cogs.games.wavelength",
+    "cogs.games.mafia",
 )
 
 

@@ -6,6 +6,31 @@ tags: [journal, changelog]
 
 Newest first. Only things that actually shipped — plans live in [[Backlog]].
 
+## 2026-10-02 — Two party games
+
+### Added
+- **[[mafia]]** — full social deduction game. Host configures how many Mafia,
+  Detective, Doctor and Police; everyone else is a Villager. Night/day/vote
+  loop, plurality voting with ties eliminating nobody, win on wipeout or parity.
+  Police is **detain** (roleblock + save) so it isn't a second Detective.
+- **[[wavelength]]** — a Psychic gets a secret spot 1–10 on a spectrum and gives
+  one clue; everyone else guesses. 45 spectrums, drawn without replacement. The
+  Psychic scores the average of their guessers, so a clue that works on the
+  whole room beats a clue that works on one friend.
+- **[[Game Framework]]** — shared lobby view and a one-game-per-channel registry.
+
+### Decisions
+- **No DMs.** Every private moment is a button that replies ephemerally. DMs fail
+  silently when closed and would stall a game with no visible cause. The one DM
+  is the Detective's result, which must outlive the phase change — and it falls
+  back to the **My role** button.
+- Rules engines take and return plain data, no Discord objects, so they're
+  testable headlessly. 38 assertions plus 200 simulated games, all passing.
+
+### Fixed before shipping
+- Night resolution stored Doctor/Police targets as flat sets, losing who acted —
+  with two Doctors, detaining one cancelled both saves. Now keyed by actor.
+
 ## 2026-10-02 — Audit, hardening, dependency bump
 
 Session notes: [[2026-10-02]]
