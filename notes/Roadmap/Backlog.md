@@ -24,6 +24,8 @@ Checkboxes + `#next` / `#someday` tags. Click a tag in the tag pane to filter, o
 - [ ] Show the question `id` in the embed footer — makes reporting a bad question possible
 - [ ] Language option from the API's `translations` field (bn/de/es/fr/hi/tl already in every response)
 - [ ] Retry once on a timeout before surfacing an error
+- [ ] Report question-API latency in `/ping`
+      Gateway and REST timings are in; the third host that actually degrades the game commands isn't measured. See [[ping]].
 
 ## Someday
 
