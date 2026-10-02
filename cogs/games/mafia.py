@@ -9,7 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from cogs._help_registry import HelpEntry
-from cogs.games._shared._core import BaseGame, active_game, register
+from cogs.games._shared._core import BaseGame, Palette, active_game, register
 from cogs.games._shared._lobby import LobbyView
 
 MAX_OPTIONS = 25  # Discord's hard cap on select options
@@ -23,34 +23,40 @@ class Role:
     blurb: str
     acts_at_night: bool
     prompt: str = ""
+    # Mafia and Police are their own plural, so this can't be name + "s".
+    plural: str = ""
+
+    def counted(self, n: int) -> str:
+        """'1 Doctor', '2 Doctors', '0 Police'."""
+        return f"{n} {self.name if n == 1 else (self.plural or self.name + 's')}"
 
 
 ROLES: dict[str, Role] = {
     "mafia": Role(
         "mafia", "Mafia", "\U0001F52A",
         "Each night you pick someone to eliminate. Win when you equal the town.",
-        True, "Who do you want to eliminate tonight?",
+        True, "Who do you want to eliminate tonight?", "Mafia",
     ),
     "detective": Role(
         "detective", "Detective", "\U0001F50D",
         "Each night you investigate one player and learn whether they're Mafia.",
-        True, "Who do you want to investigate?",
+        True, "Who do you want to investigate?", "Detectives",
     ),
     "doctor": Role(
         "doctor", "Doctor", "\U0001F489",
         "Each night you protect one player from being killed. You may protect yourself.",
-        True, "Who do you want to protect?",
+        True, "Who do you want to protect?", "Doctors",
     ),
     "police": Role(
         "police", "Police", "\U0001F693",
         "Each night you detain one player: they can't use a night action, "
         "and they can't be killed.",
-        True, "Who do you want to detain tonight?",
+        True, "Who do you want to detain tonight?", "Police",
     ),
     "villager": Role(
         "villager", "Villager", "\U0001F9D1‍\U0001F33E",
         "No night action. Work out who the Mafia are, and vote.",
-        False,
+        False, "", "Villagers",
     ),
 }
 
@@ -72,7 +78,7 @@ class Settings:
         for key in CONFIGURABLE:
             n = getattr(self, key)
             if n:
-                bits.append(f"{ROLES[key].emoji} {n} {ROLES[key].name}")
+                bits.append(f"{ROLES[key].emoji} {ROLES[key].counted(n)}")
         return " · ".join(bits) if bits else "no special roles"
 
     def validate(self, players: int) -> str | None:
@@ -168,14 +174,18 @@ class MafiaGame(BaseGame):
         }
         self.started = True
 
-    def lobby_text(self) -> str:
-        problem = self.settings.validate(self.count)
-        warning = f"\n-# ⚠️ {problem}" if problem and self.count >= self.min_players else ""
-        return (
-            f"{super().lobby_text()}\n"
-            f"**Roles:** {self.settings.summary()} · everyone else is a Villager"
-            f"{warning}"
+    def lobby_embed(self) -> discord.Embed:
+        embed = super().lobby_embed()
+        embed.add_field(
+            name="Roles",
+            value=f"{self.settings.summary()}\neveryone else is a Villager",
+            inline=False,
         )
+        problem = self.settings.validate(self.count)
+        if problem and self.count >= self.min_players:
+            embed.colour = Palette.WARN
+            embed.set_footer(text=f"⚠️ {problem}")
+        return embed
 
     # -- night resolution -------------------------------------------------
 
@@ -245,28 +255,43 @@ class MafiaGame(BaseGame):
             return "mafia"
         return None
 
-    def roster_line(self) -> str:
-        alive = ", ".join(p.name for p in self.living)
+    def add_roster(self, embed: discord.Embed) -> discord.Embed:
+        """Alive list always; the out list only once somebody is out."""
+        embed.add_field(
+            name=f"Alive ({len(self.living)})",
+            value=", ".join(p.name for p in self.living) or "nobody",
+            inline=False,
+        )
         dead = [p for p in self.cast.values() if not p.alive]
-        out = f"**Alive ({len(self.living)}):** {alive}"
         if dead:
-            out += "\n-# Out: " + ", ".join(
-                f"{p.name} ({p.role.name})" for p in dead
+            embed.add_field(
+                name="Out",
+                value=", ".join(f"{p.name} {p.role.emoji}" for p in dead),
+                inline=False,
             )
-        return out
+        return embed
 
-    def final_text(self, who: str) -> str:
-        banner = (
-            "\U0001F3C6 **Town wins!** Every Mafia is gone."
-            if who == "town"
-            else "\U0001F52A **Mafia wins!** They equal the town."
+    def final_embed(self, who: str) -> discord.Embed:
+        town = who == "town"
+        embed = discord.Embed(
+            title="\U0001F3C6 Town wins!" if town else "\U0001F52A Mafia wins!",
+            description=(
+                "Every Mafia is gone."
+                if town
+                else "The Mafia equal the town — nobody can stop them now."
+            ),
+            colour=Palette.TOWN_WIN if town else Palette.MAFIA_WIN,
         )
-        reveal = "\n".join(
-            f"{p.role.emoji} {p.name} — {p.role.name}"
-            + ("" if p.alive else " (out)")
-            for p in self.cast.values()
+        embed.add_field(
+            name="Everyone's role",
+            value="\n".join(
+                f"{p.role.emoji} **{p.name}** — {p.role.name}"
+                + ("" if p.alive else " *(out)*")
+                for p in self.cast.values()
+            ),
+            inline=False,
         )
-        return f"{banner}\n\n**Everyone's role:**\n{reveal}"
+        return embed
 
 
 # ---------------------------------------------------------------------------
@@ -281,7 +306,7 @@ class CountSelect(discord.ui.Select):
         lowest = 1 if key == "mafia" else 0
         options = [
             discord.SelectOption(
-                label=f"{n} {role.name}" + ("" if n == 1 else "s"),
+                label=role.counted(n),
                 value=str(n),
                 default=(n == current),
             )
@@ -303,7 +328,7 @@ class CountSelect(discord.ui.Select):
         if self.game.message:
             try:
                 await self.game.message.edit(
-                    content=self.game.lobby_text(), view=self.lobby_view
+                    embed=self.game.lobby_embed(), view=self.lobby_view
                 )
             except discord.HTTPException:
                 pass
@@ -366,16 +391,20 @@ class NightView(discord.ui.View):
         super().__init__(timeout=1800)
         self.game = game
 
-    def text(self) -> str:
+    def embed(self) -> discord.Embed:
         g = self.game
         actors = g.night_actors()
         done = len(g.night_actions.submitted & {p.id for p in actors})
-        return (
-            f"\U0001F319 **Night {g.day + 1}** — everyone close your eyes.\n"
-            f"{g.roster_line()}\n"
-            f"-# {done}/{len(actors)} night actions in. "
-            "Tap below if you have one."
+        emb = discord.Embed(
+            title=f"\U0001F319 Night {g.day + 1}",
+            description="Everyone close your eyes.",
+            colour=Palette.NIGHT,
         )
+        g.add_roster(emb)
+        emb.set_footer(
+            text=f"{done}/{len(actors)} night actions in · tap below if you have one"
+        )
+        return emb
 
     async def after_submit(self, interaction: discord.Interaction) -> None:
         g = self.game
@@ -384,7 +413,7 @@ class NightView(discord.ui.View):
             await self.resolve(interaction)
         elif g.message:
             try:
-                await g.message.edit(content=self.text(), view=self)
+                await g.message.edit(embed=self.embed(), view=self)
             except discord.HTTPException:
                 pass
 
@@ -409,18 +438,20 @@ class NightView(discord.ui.View):
         )
         if g.message:
             try:
-                await g.message.edit(content=self.text(), view=None)
+                await g.message.edit(embed=self.embed(), view=None)
             except discord.HTTPException:
                 pass
 
         won = g.winner()
         if won:
             await g.finish()
-            await interaction.followup.send(f"{headline}\n\n{g.final_text(won)}")
+            await interaction.followup.send(content=headline, embed=g.final_embed(won))
             return
 
         day_view = DayView(g, headline)
-        g.message = await interaction.followup.send(day_view.text(), view=day_view, wait=True)
+        g.message = await interaction.followup.send(
+            embed=day_view.embed(), view=day_view, wait=True
+        )
 
     @discord.ui.button(
         label="My night action", style=discord.ButtonStyle.primary, emoji="\U0001F311"
@@ -477,12 +508,15 @@ class DayView(discord.ui.View):
         self.game = game
         self.headline = headline
 
-    def text(self) -> str:
-        return (
-            f"☀️ **Day {self.game.day}**\n{self.headline}\n"
-            f"{self.game.roster_line()}\n"
-            "-# Talk it out. The host starts the vote when you're ready."
+    def embed(self) -> discord.Embed:
+        emb = discord.Embed(
+            title=f"☀️ Day {self.game.day}",
+            description=self.headline,
+            colour=Palette.DAY,
         )
+        self.game.add_roster(emb)
+        emb.set_footer(text="Talk it out. The host starts the vote when you're ready.")
+        return emb
 
     @discord.ui.button(label="Start the vote", style=discord.ButtonStyle.primary, emoji="\U0001F5F3️")
     async def vote_btn(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
@@ -493,9 +527,9 @@ class DayView(discord.ui.View):
         self.stop()
         self.game.votes = {}
         view = VoteView(self.game)
-        await interaction.response.edit_message(content=self.text(), view=None)
+        await interaction.response.edit_message(embed=self.embed(), view=None)
         self.game.message = await interaction.followup.send(
-            view.text(), view=view, wait=True
+            embed=view.embed(), view=view, wait=True
         )
 
     @discord.ui.button(label="My role", style=discord.ButtonStyle.secondary, emoji="\U0001F3AD")
@@ -537,20 +571,22 @@ class VoteView(discord.ui.View):
         super().__init__(timeout=1800)
         self.game = game
 
-    def text(self) -> str:
+    def embed(self) -> discord.Embed:
         g = self.game
         counts = g.tally()
-        lines = [f"\U0001F5F3️ **Day {g.day} vote** — {len(g.votes)}/{len(g.living)} voted"]
-        if counts:
-            standing = " · ".join(
-                f"{g.player(pid).name if g.player(pid) else '?'} **{n}**"
-                for pid, n in counts.most_common()
-            )
-            lines.append(standing)
+        standing = "\n".join(
+            f"**{n}** — {g.player(pid).name if g.player(pid) else '?'}"
+            for pid, n in counts.most_common()
+        ) or "No votes yet."
+        emb = discord.Embed(
+            title=f"\U0001F5F3️ Day {g.day} vote",
+            description=standing,
+            colour=Palette.VOTE,
+        )
         skips = sum(1 for v in g.votes.values() if v is None)
-        if skips:
-            lines.append(f"-# {skips} skipping")
-        return "\n".join(lines)
+        tail = f" · {skips} skipping" if skips else ""
+        emb.set_footer(text=f"{len(g.votes)}/{len(g.living)} voted{tail}")
+        return emb
 
     async def after_vote(self, interaction: discord.Interaction) -> None:
         g = self.game
@@ -558,7 +594,7 @@ class VoteView(discord.ui.View):
             await self.close(interaction)
         elif g.message:
             try:
-                await g.message.edit(content=self.text(), view=self)
+                await g.message.edit(embed=self.embed(), view=self)
             except discord.HTTPException:
                 pass
 
@@ -568,20 +604,20 @@ class VoteView(discord.ui.View):
         _, verdict = g.vote_result()
         if g.message:
             try:
-                await g.message.edit(content=self.text(), view=None)
+                await g.message.edit(embed=self.embed(), view=None)
             except discord.HTTPException:
                 pass
 
         won = g.winner()
         if won:
             await g.finish()
-            await interaction.followup.send(f"{verdict}\n\n{g.final_text(won)}")
+            await interaction.followup.send(content=verdict, embed=g.final_embed(won))
             return
 
         g.night_actions = NightActions()
         night = NightView(g)
         g.message = await interaction.followup.send(
-            f"{verdict}\n\n{night.text()}", view=night, wait=True
+            content=verdict, embed=night.embed(), view=night, wait=True
         )
 
     @discord.ui.button(label="Vote", style=discord.ButtonStyle.primary, emoji="\U0001F5F3️")
@@ -652,10 +688,16 @@ class RoleRevealView(discord.ui.View):
         self.stop()
         night = NightView(self.game)
         await interaction.response.edit_message(
-            content="\U0001F3AD Roles are in. Night falls...", view=None
+            content=None,
+            embed=discord.Embed(
+                title="\U0001F3AD Roles are in",
+                description="Night falls...",
+                colour=Palette.NIGHT,
+            ),
+            view=None,
         )
         self.game.message = await interaction.followup.send(
-            night.text(), view=night, wait=True
+            embed=night.embed(), view=night, wait=True
         )
 
 
@@ -699,18 +741,17 @@ class Mafia(commands.Cog):
                 return await inter.response.send_message(problem, ephemeral=True)
             game.assign_roles()
             view = RoleRevealView(game)
-            await inter.response.edit_message(
-                content=(
-                    f"\U0001F576️ **Mafia** — {game.count} players\n"
-                    f"{game.settings.summary()}\n"
-                    "-# Everyone tap **Reveal my role** (only you can see it)."
-                ),
-                view=view,
+            embed = discord.Embed(
+                title=f"\U0001F576️ Mafia — {game.count} players",
+                description=f"{game.settings.summary()}\neveryone else is a Villager",
+                colour=Palette.LOBBY,
             )
+            embed.set_footer(text="Everyone tap Reveal my role — only you can see it.")
+            await inter.response.edit_message(content=None, embed=embed, view=view)
             game.message = await inter.original_response()
 
         lobby = LobbyView(game, on_start=on_start, on_setup=on_setup, setup_label="Roles")
-        await interaction.response.send_message(game.lobby_text(), view=lobby)
+        await interaction.response.send_message(embed=game.lobby_embed(), view=lobby)
         game.message = await interaction.original_response()
 
 

@@ -2,6 +2,22 @@ from __future__ import annotations
 
 import discord
 
+
+class Palette:
+    """Phase colours. The colour is the fastest signal of what's happening."""
+
+    LOBBY = discord.Colour.blurple()
+    WARN = discord.Colour.orange()
+    NIGHT = discord.Colour.from_rgb(43, 45, 102)
+    DAY = discord.Colour.gold()
+    VOTE = discord.Colour.orange()
+    TOWN_WIN = discord.Colour.green()
+    MAFIA_WIN = discord.Colour.from_rgb(190, 40, 40)
+    ROUND = discord.Colour.teal()
+    REVEAL = discord.Colour.purple()
+    OVER = discord.Colour.dark_grey()
+
+
 # One game per channel. Keyed by channel id.
 _ACTIVE: dict[int, "BaseGame"] = {}
 
@@ -67,15 +83,18 @@ class BaseGame:
 
     # -- lifecycle -------------------------------------------------------
 
-    def lobby_text(self) -> str:
-        """Compact lobby body. Subclasses usually append a settings line."""
-        names = ", ".join(p.display_name for p in self.roster)
+    def lobby_embed(self) -> discord.Embed:
+        """Compact lobby card. Subclasses add at most one more field."""
         need = max(0, self.min_players - self.count)
-        status = f"need {need} more" if need else "ready"
-        return (
-            f"{self.emoji} **{self.name}** — hosted by {self.host.display_name}\n"
-            f"**{self.count}** joined ({status}): {names}"
+        status = f"need {need} more" if need else "ready to start"
+        embed = discord.Embed(title=f"{self.emoji} {self.name}", colour=Palette.LOBBY)
+        embed.add_field(
+            name=f"Players ({self.count}) — {status}",
+            value=", ".join(p.display_name for p in self.roster) or "nobody yet",
+            inline=False,
         )
+        embed.set_footer(text=f"Hosted by {self.host.display_name}")
+        return embed
 
     async def finish(self) -> None:
         self.finished = True

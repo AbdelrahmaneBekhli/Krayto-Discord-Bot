@@ -47,6 +47,27 @@ Each phase owns one channel message that gets edited in place — counters like 
 
 Every `message.edit` is wrapped in `try/except discord.HTTPException`: the message may be deleted mid-game, and a failed cosmetic refresh must never kill a round.
 
+## Embeds, and the colour as signal
+
+Every public game surface is an embed; `Palette` in `_core.py` holds the colours. The colour is the point — **night is deep blue, day is gold, voting is orange, a win is green or red.** You know what phase the channel is in before reading a word, which plain text can't do.
+
+| Where | Colour |
+|---|---|
+| Lobby | blurple · orange if the setup is invalid |
+| Night | deep navy |
+| Day | gold |
+| Vote | orange |
+| Town win / Mafia win | green / red |
+| Wavelength round / reveal | teal / purple |
+
+> [!important] Light embeds only
+> **At most two fields**, a short description, and the live counter in the footer. The brief was "fine to use embeds, as long as it's not overloaded with text and easy to read" — a game board people glance at twenty times a round can't be a wall of text. There's a headless renderer in the scratchpad that prints every embed and asserts the Discord limits.
+
+Ephemeral confirmations (`✅ Locked in: Rana`) stay plain text — they're one line and disappear.
+
+> [!warning] Clear the old embed on a transition
+> `edit_message(content=...)` leaves any existing embed attached. When a message switches from an embed to plain text, pass `embed=None`; when it switches the other way, pass `content=None`. Forgetting leaves the lobby card stuck above the first round.
+
 ## Hard limits worth remembering
 
 | Limit | Value | Consequence |

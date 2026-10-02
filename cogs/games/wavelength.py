@@ -7,7 +7,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from cogs._help_registry import HelpEntry
-from cogs.games._shared._core import BaseGame, active_game, bar, register
+from cogs.games._shared._core import BaseGame, Palette, active_game, bar, register
 from cogs.games._shared._lobby import LobbyView
 
 SLOTS = 10
@@ -41,7 +41,7 @@ def gauge(position: int) -> str:
 
 
 def spectrum_line(left: str, right: str) -> str:
-    return f"**{left}** |---------| **{right}**"
+    return f"**{left}**  ◀━━━━━━━━━▶  **{right}**"
 
 
 def score_for(guess: int, target: int) -> int:
@@ -109,12 +109,13 @@ class WavelengthGame(BaseGame):
             parts.append(f"{tag} {member.display_name} **{score}**")
         return " · ".join(parts)
 
-    def lobby_text(self) -> str:
-        return (
-            f"{super().lobby_text()}\n"
-            "-# One player gets a secret spot on a scale and gives a one-word clue. "
+    def lobby_embed(self) -> discord.Embed:
+        embed = super().lobby_embed()
+        embed.description = (
+            "One player gets a secret spot on a scale and gives a one-word clue. "
             "Everyone else guesses where it was."
         )
+        return embed
 
 
 class ClueModal(discord.ui.Modal, title="Your clue"):
@@ -170,32 +171,35 @@ class RoundView(discord.ui.View):
 
     # -- rendering -------------------------------------------------------
 
-    def clue_text(self) -> str:
+    def _base_embed(self) -> discord.Embed:
         g = self.game
-        psychic = g.psychic.display_name if g.psychic else "?"
-        return (
-            f"\U0001F4E1 **Round {g.round_index + 1}/{len(g.order)}** — "
-            f"{psychic} is the Psychic\n"
-            f"{spectrum_line(g.left, g.right)}\n"
-            "-# Waiting for a clue..."
+        return discord.Embed(
+            title=f"\U0001F4E1 Round {g.round_index + 1}/{len(g.order)}",
+            description=spectrum_line(g.left, g.right),
+            colour=Palette.ROUND,
         )
 
-    def guessing_text(self) -> str:
+    def clue_embed(self) -> discord.Embed:
+        g = self.game
+        psychic = g.psychic.display_name if g.psychic else "?"
+        emb = self._base_embed()
+        emb.set_footer(text=f"{psychic} is the Psychic · waiting for a clue...")
+        return emb
+
+    def guessing_embed(self) -> discord.Embed:
         g = self.game
         remaining = len(g.guessers) - len(g.guesses)
-        tail = "" if remaining else " — everyone's in, reveal when ready"
+        tail = "" if remaining else " · everyone's in, reveal when ready"
         psychic = g.psychic.display_name if g.psychic else "?"
-        return (
-            f"\U0001F4E1 **Round {g.round_index + 1}/{len(g.order)}** — "
-            f"{psychic} says: **“{g.clue}”**\n"
-            f"{spectrum_line(g.left, g.right)}\n"
-            f"-# {len(g.guesses)}/{len(g.guessers)} guessed{tail}"
-        )
+        emb = self._base_embed()
+        emb.add_field(name=f"{psychic} says", value=f"**“{g.clue}”**", inline=False)
+        emb.set_footer(text=f"{len(g.guesses)}/{len(g.guessers)} guessed{tail}")
+        return emb
 
     async def refresh_public(self) -> None:
         if self.game.message:
             try:
-                await self.game.message.edit(content=self.guessing_text(), view=self)
+                await self.game.message.edit(embed=self.guessing_embed(), view=self)
             except discord.HTTPException:
                 pass
 
@@ -203,7 +207,7 @@ class RoundView(discord.ui.View):
         self.clear_items()
         self.add_item(self.guess_btn)
         self.add_item(self.reveal_btn)
-        await interaction.response.edit_message(content=self.guessing_text(), view=self)
+        await interaction.response.edit_message(embed=self.guessing_embed(), view=self)
 
     # -- buttons ---------------------------------------------------------
 
@@ -260,17 +264,18 @@ class RoundView(discord.ui.View):
                 "Nobody has guessed yet.", ephemeral=True
             )
         self.stop()
-        await interaction.response.edit_message(content=self.reveal_text(), view=None)
+        await interaction.response.edit_message(embed=self.reveal_embed(), view=None)
         await advance(g, interaction)
 
-    def reveal_text(self) -> str:
+    def reveal_embed(self) -> discord.Embed:
         g = self.game
-        lines = [
-            f"\U0001F4E1 **Round {g.round_index + 1}** — the spot was "
-            f"{gauge(g.target)} (**{g.target}**)",
-            f"{spectrum_line(g.left, g.right)} · clue: **“{g.clue}”**",
-            "",
-        ]
+        emb = discord.Embed(
+            title=f"\U0001F4E1 Round {g.round_index + 1} — the spot was {g.target}",
+            description=f"{spectrum_line(g.left, g.right)}\n{gauge(g.target)}",
+            colour=Palette.REVEAL,
+        )
+
+        lines = []
         for member in g.guessers:
             guess = g.guesses.get(member.id)
             if guess is None:
@@ -287,9 +292,10 @@ class RoundView(discord.ui.View):
         if g.psychic:
             g.scores[g.psychic.id] = g.scores.get(g.psychic.id, 0) + bonus
             lines.append(f"\U0001F52E {g.psychic.display_name} (Psychic) **+{bonus}**")
-        lines.append("")
-        lines.append(g.scoreboard())
-        return "\n".join(lines)
+
+        emb.add_field(name=f"Clue: “{g.clue}”", value="\n".join(lines), inline=False)
+        emb.add_field(name="Scores", value=g.scoreboard(), inline=False)
+        return emb
 
 
 class _ClueLauncher(discord.ui.View):
@@ -309,14 +315,19 @@ async def advance(game: WavelengthGame, interaction: discord.Interaction) -> Non
     """Start the next round, or finish the game."""
     if not game.next_round():
         await game.finish()
-        await interaction.followup.send(
-            f"\U0001F4E1 **Wavelength — final scores**\n{game.scoreboard()}\n"
-            "-# `/wavelength` to go again."
+        emb = discord.Embed(
+            title="\U0001F4E1 Wavelength — final scores",
+            description=game.scoreboard(),
+            colour=Palette.REVEAL,
         )
+        emb.set_footer(text="/wavelength to go again")
+        await interaction.followup.send(embed=emb)
         return
 
     view = RoundView(game)
-    game.message = await interaction.followup.send(view.clue_text(), view=view, wait=True)
+    game.message = await interaction.followup.send(
+        embed=view.clue_embed(), view=view, wait=True
+    )
 
 
 class Wavelength(commands.Cog):
@@ -350,13 +361,20 @@ class Wavelength(commands.Cog):
             game.next_round()
             view = RoundView(game)
             await inter.response.edit_message(
-                content=f"\U0001F4E1 **Wavelength** starting with {game.count} players!",
+                content=None,
+                embed=discord.Embed(
+                    title="\U0001F4E1 Wavelength",
+                    description=f"Starting with {game.count} players!",
+                    colour=Palette.ROUND,
+                ),
                 view=None,
             )
-            game.message = await inter.followup.send(view.clue_text(), view=view, wait=True)
+            game.message = await inter.followup.send(
+                embed=view.clue_embed(), view=view, wait=True
+            )
 
         lobby = LobbyView(game, on_start=on_start)
-        await interaction.response.send_message(game.lobby_text(), view=lobby)
+        await interaction.response.send_message(embed=game.lobby_embed(), view=lobby)
         game.message = await interaction.original_response()
 
 

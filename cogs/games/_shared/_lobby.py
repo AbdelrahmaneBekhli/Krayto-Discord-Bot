@@ -4,7 +4,7 @@ from typing import Awaitable, Callable
 
 import discord
 
-from cogs.games._shared._core import BaseGame
+from cogs.games._shared._core import BaseGame, Palette
 
 StartCallback = Callable[[discord.Interaction], Awaitable[None]]
 SetupCallback = Callable[[discord.Interaction], Awaitable[None]]
@@ -33,7 +33,9 @@ class LobbyView(discord.ui.View):
             self.setup_btn.label = setup_label
 
     async def refresh(self, interaction: discord.Interaction) -> None:
-        await interaction.response.edit_message(content=self.game.lobby_text(), view=self)
+        await interaction.response.edit_message(
+            content=None, embed=self.game.lobby_embed(), view=self
+        )
 
     @discord.ui.button(label="Join", style=discord.ButtonStyle.success, emoji="✅")
     async def join_btn(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
@@ -79,9 +81,12 @@ class LobbyView(discord.ui.View):
             )
         await self.game.finish()
         self.stop()
-        await interaction.response.edit_message(
-            content=f"{self.game.emoji} **{self.game.name}** — cancelled by the host.", view=None
+        embed = discord.Embed(
+            title=f"{self.game.emoji} {self.game.name}",
+            description="Cancelled by the host.",
+            colour=Palette.OVER,
         )
+        await interaction.response.edit_message(content=None, embed=embed, view=None)
 
     async def on_timeout(self) -> None:
         if not self.game.started:
