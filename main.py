@@ -21,23 +21,71 @@ EXTENSIONS = (
 )
 
 
+TOKEN_KEYS = {"DISCORD_TOKEN", "TOKEN", "BOT_TOKEN"}
+
+# Prefixes used by the shells people copy assignments from, so a pasted
+# `$env:DISCORD_TOKEN="..."` or `export DISCORD_TOKEN=...` line is understood.
+_KEY_PREFIXES = ("$ENV:", "EXPORT ", "SET ", "SETX ")
+
+
+def _normalise_key(key: str) -> str:
+    """Strip shell assignment noise so `$env:DISCORD_TOKEN` reads as DISCORD_TOKEN."""
+    key = key.strip().upper()
+    changed = True
+    while changed:
+        changed = False
+        for prefix in _KEY_PREFIXES:
+            if key.startswith(prefix):
+                key = key[len(prefix):].lstrip()
+                changed = True
+    return key
+
+
+def _looks_like_token(value: str) -> bool:
+    """A Discord token is three dot-separated base64 chunks and fairly long."""
+    return len(value) >= 50 and value.count(".") >= 2 and " " not in value
+
+
+def _clean_value(value: str) -> str:
+    return value.strip().strip("'\"")
+
+
+def _iter_lines(raw: str):
+    for line in raw.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            yield line
+
+
 def _read_token_file(path: Path) -> str | None:
-    """Read a token from a plain-text or KEY=VALUE file."""
+    """
+    Read a token from a file holding either a bare token or an assignment.
+
+    Understands `DISCORD_TOKEN=...`, `export DISCORD_TOKEN=...`,
+    `$env:DISCORD_TOKEN="..."` and `set DISCORD_TOKEN=...`.
+    """
     try:
         raw = path.read_text(encoding="utf-8-sig")
     except OSError:
         return None
 
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
+    # Pass 1: an explicit assignment to a key we recognise always wins, so a
+    # file holding several variables still resolves the right one.
+    for line in _iter_lines(raw):
+        if "=" not in line:
             continue
-        if "=" in line:
-            key, _, value = line.partition("=")
-            if key.strip().upper() not in {"DISCORD_TOKEN", "TOKEN", "BOT_TOKEN"}:
-                continue
-            line = value.strip().strip("'\"")
-        return line or None
+        key, _, value = line.partition("=")
+        if _normalise_key(key) in TOKEN_KEYS:
+            return _clean_value(value) or None
+
+    # Pass 2: fall back to a bare token on its own line. A line containing '='
+    # is skipped as an assignment to something else -- unless it still looks
+    # like a token, since base64 padding can legitimately contain '='.
+    for line in _iter_lines(raw):
+        if "=" in line and not _looks_like_token(line):
+            continue
+        return _clean_value(line) or None
+
     return None
 
 
