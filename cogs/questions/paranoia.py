@@ -1,60 +1,55 @@
+from __future__ import annotations
+
 import discord
 from discord import app_commands
 from discord.ext import commands
 
+from cogs._help_registry import HelpEntry
 from cogs.questions._shared._base_prompt_view import BasePromptView
 from cogs.questions._shared._config import API_API, RATING_CHOICES
-from cogs.questions._shared._http import api_get
-from cogs._help_registry import HelpEntry
+from cogs.questions._shared._http import api_get, prompt_text
+
 
 async def fetch_paranoia(bot, rating: str) -> dict:
     return await api_get(bot, API_API, "/paranoia", rating=rating)
 
 
-def make_embed(text: str, rating: str):
+def make_embed(text: str, rating: str) -> discord.Embed:
     title = "Paranoia"
     if rating != "any":
         title += f" ({rating.upper()})"
-    return discord.Embed(title=title, description=text)
+    return discord.Embed(title=title, description=text, colour=discord.Colour.purple())
 
 
 class ParanoiaView(BasePromptView):
-    async def _update(self, interaction: discord.Interaction):
-        if not await self.guard(interaction):
-            return
-
+    @discord.ui.button(label="Another", style=discord.ButtonStyle.primary, emoji="🔁")
+    async def another_btn(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await interaction.response.defer()
 
         data = await fetch_paranoia(self.bot, self.rating)
-        text = data.get("question") or "No prompt found."
-        embed = make_embed(text, self.rating)
-
-        await self.update_message(interaction, embed=embed)
-
-    @discord.ui.button(label="Another", style=discord.ButtonStyle.primary, emoji="🔁")
-    async def another_btn(self, interaction: discord.Interaction, _):
-        await self._update(interaction)
+        await self.update_message(interaction, embed=make_embed(prompt_text(data), self.rating))
 
 
 class Paranoia(commands.Cog):
     HELP_ENTRIES = [
-    HelpEntry(
-        name="paranoia",
-        summary="Paranoia questions with an “Another” button",
-        category="Games",
-        examples=[
-            "/paranoia",
-            "/paranoia rating:PG",
-            "/paranoia lock:true"
-        ],
-        show_in_help=True,
-        options_help={
-            "rating": "Filter question rating (Any/PG/PG-13/R)",
-            "lock": "true = only you can press the button"
-        }
-    )
+        HelpEntry(
+            name="paranoia",
+            summary="Paranoia questions with an “Another” button",
+            category="Games",
+            examples=[
+                "/paranoia",
+                "/paranoia rating:PG",
+                "/paranoia lock:true",
+            ],
+            show_in_help=True,
+            options_help={
+                "rating": "Filter question rating (Any/PG/PG-13/R)",
+                "lock": "true = only you can press the button",
+            },
+        )
     ]
-    def __init__(self, bot: commands.Bot):
+
+    def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
     @app_commands.command(name="paranoia", description="Paranoia questions")
@@ -64,19 +59,23 @@ class Paranoia(commands.Cog):
         self,
         interaction: discord.Interaction,
         rating: app_commands.Choice[str] | None = None,
-        lock: bool | None = None,
-    ):
+        lock: bool = False,
+    ) -> None:
         selected_rating = rating.value if rating else "any"
-        owner_id = interaction.user.id if lock is True else None
+        owner_id = interaction.user.id if lock else None
+
+        # Defer first: the API call below can outlast Discord's 3s reply window.
+        await interaction.response.defer()
 
         data = await fetch_paranoia(self.bot, selected_rating)
-        text = data.get("question") or "No prompt found."
-        embed = make_embed(text, selected_rating)
 
         view = ParanoiaView(bot=self.bot, rating=selected_rating, owner_id=owner_id)
-        await interaction.response.send_message(embed=embed, view=view)
-        view.message = await interaction.original_response()
+        view.message = await interaction.followup.send(
+            embed=make_embed(prompt_text(data), selected_rating),
+            view=view,
+            wait=True,
+        )
 
 
-async def setup(bot: commands.Bot):
+async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(Paranoia(bot))

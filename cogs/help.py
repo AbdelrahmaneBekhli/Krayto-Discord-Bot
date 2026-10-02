@@ -1,9 +1,31 @@
+from __future__ import annotations
+
+from collections import defaultdict
+
 import discord
 from discord import app_commands
 from discord.ext import commands
-from collections import defaultdict
 
-from cogs._help_registry import HelpEntry, get_help_entries, by_name
+from cogs._help_registry import HelpEntry, by_name, get_help_entries
+
+FIELD_LIMIT = 1024  # Discord's per-field value limit
+PREFERRED_ORDER = ("Games", "Utility", "Admin", "Other")
+
+
+def _fit_field(lines: list[str]) -> str:
+    """Join lines into one field value, dropping any that would overflow."""
+    out: list[str] = []
+    used = 0
+    for line in lines:
+        cost = len(line) + (1 if out else 0)
+        if used + cost > FIELD_LIMIT:
+            marker = "…"
+            if used + len(marker) + 1 <= FIELD_LIMIT:
+                out.append(marker)
+            break
+        out.append(line)
+        used += cost
+    return "\n".join(out)
 
 
 class Help(commands.Cog):
@@ -24,12 +46,36 @@ class Help(commands.Cog):
         )
     ]
 
-    def __init__(self, bot: commands.Bot):
+    def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+
+    def _visible_names(self) -> list[str]:
+        """Command names that /help is willing to talk about."""
+        entry_map = by_name(get_help_entries(self.bot))
+        names = [name for name, entry in entry_map.items() if entry.show_in_help]
+        names += [
+            cmd.name
+            for cmd in self.bot.tree.get_commands()
+            if cmd.name not in entry_map
+        ]
+        return sorted(set(names))
+
+    async def _command_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        current = current.lstrip("/").lower()
+        return [
+            app_commands.Choice(name=name, value=name)
+            for name in self._visible_names()
+            if current in name.lower()
+        ][:25]
 
     @app_commands.command(name="help", description="Show commands and how to use them")
     @app_commands.describe(command="Get help for a specific command")
-    async def help(self, interaction: discord.Interaction, command: str | None = None):
+    @app_commands.autocomplete(command=_command_autocomplete)
+    async def help(self, interaction: discord.Interaction, command: str | None = None) -> None:
         # Auto-detect all slash commands currently registered
         detected = {c.name: c for c in self.bot.tree.get_commands()}
         entries = get_help_entries(self.bot)
@@ -38,32 +84,36 @@ class Help(commands.Cog):
         # -------- Specific command help --------
         if command:
             name = command.lstrip("/").strip()
-            cmd = detected.get(name)
             meta = entry_map.get(name)
+            cmd = detected.get(name)
 
-            if not cmd and not meta:
+            # Hidden commands are treated as nonexistent so /help never leaks them.
+            if (meta and not meta.show_in_help) or (not cmd and not meta):
                 return await interaction.response.send_message(
                     f"❌ I couldn't find `/{name}`.",
                     ephemeral=True,
                 )
 
-            title = f"Help • /{name}"
-            desc = (meta.summary if meta else (cmd.description if cmd else ""))
-            embed = discord.Embed(title=title, description=desc or "No description")
+            desc = meta.summary if meta else (cmd.description if cmd else "")
+            embed = discord.Embed(
+                title=f"Help • /{name}",
+                description=desc or "No description",
+            )
 
             if meta and meta.examples:
                 embed.add_field(
                     name="Examples",
-                    value="\n".join(f"• `{ex}`" for ex in meta.examples),
+                    value=_fit_field([f"• `{ex}`" for ex in meta.examples]),
                     inline=False,
                 )
 
             # If we have the actual command object, show options automatically
-            if cmd and getattr(cmd, "parameters", None) and cmd.parameters:
-                opts = []
+            parameters = getattr(cmd, "parameters", None)
+            if parameters:
                 meta_opt = meta.options_help if meta else {}
+                opts = []
 
-                for p in cmd.parameters:
+                for p in parameters:
                     required = "required" if p.required else "optional"
 
                     # Prefer per-cog override text, fallback to Discord description
@@ -76,7 +126,7 @@ class Help(commands.Cog):
 
                     opts.append(f"• **{p.name}** ({required}) — {opt_desc}")
 
-                embed.add_field(name="Options", value="\n".join(opts), inline=False)
+                embed.add_field(name="Options", value=_fit_field(opts), inline=False)
 
             embed.set_footer(text="Tip: type / and select a command to see its options.")
             return await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -87,7 +137,7 @@ class Help(commands.Cog):
             description="Available commands (buttons let you generate prompts without retyping).",
         )
 
-        cats = defaultdict(list)
+        cats: defaultdict[str, list[str]] = defaultdict(list)
 
         # Prefer metadata for nice formatting (and to support hidden commands)
         for e in entries:
@@ -99,16 +149,11 @@ class Help(commands.Cog):
             if name not in entry_map:
                 cats["Other"].append(f"**/{name}** — {cmd.description or 'No description'}")
 
-        # Render categories in stable order
-        preferred_order = ["Games", "Utility", "Admin", "Other"]
-        for cat in preferred_order:
+        # Render categories in stable order, then any remaining ones alphabetically
+        extra = sorted(cat for cat in cats if cat not in PREFERRED_ORDER)
+        for cat in (*PREFERRED_ORDER, *extra):
             if cats.get(cat):
-                embed.add_field(name=cat, value="\n".join(cats[cat]), inline=False)
-
-        # Any remaining categories
-        for cat, lines in cats.items():
-            if cat not in preferred_order and lines:
-                embed.add_field(name=cat, value="\n".join(lines), inline=False)
+                embed.add_field(name=cat, value=_fit_field(cats[cat]), inline=False)
 
         embed.add_field(
             name="Tips",
@@ -122,5 +167,5 @@ class Help(commands.Cog):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-async def setup(bot: commands.Bot):
+async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(Help(bot))
