@@ -18,6 +18,7 @@ EXTENSIONS = (
     "cogs.questions.tod",
     "cogs.questions.nhie_wyr",
     "cogs.questions.paranoia",
+    "cogs.games.wavelength",
 )
 
 
