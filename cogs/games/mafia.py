@@ -196,6 +196,18 @@ class MafiaGame(BaseGame):
             log.warning("AI narration failed", exc_info=True)
         return None
 
+    def fact(self, text: str) -> str:
+        """
+        A plain statement of what happened.
+
+        When the narrator is on it has just spent five beats on this, so the
+        factual line drops to a caption rather than competing as a headline.
+        It stays in full when there is no story to have told it.
+        """
+        if self.settings.narration == narrator.OFF:
+            return text
+        return f"-# {text}"
+
     def narrator_label(self) -> str:
         """e.g. 'Narrator: dramatic · ✨ AI · 🖼️ panels'."""
         label = narrator.NARRATION_LABELS[self.settings.narration]
@@ -549,6 +561,21 @@ class NightView(discord.ui.View):
         )
         return emb
 
+    @staticmethod
+    def closed_embed(night_number: int) -> discord.Embed:
+        """
+        What the night card becomes once the night is over.
+
+        It used to re-render the full roster, which repeated everything the
+        upcoming day card was about to say -- and, because the day counter had
+        already advanced, retitled itself as the *next* night.
+        """
+        return discord.Embed(
+            title=f"\U0001F319 Night {night_number}",
+            description="-# Everyone acted. The night is over.",
+            colour=Palette.NIGHT,
+        )
+
     async def after_submit(self, interaction: discord.Interaction) -> None:
         g = self.game
         actors = {p.id for p in g.night_actors()}
@@ -583,7 +610,9 @@ class NightView(discord.ui.View):
         )
         if g.message:
             try:
-                await g.message.edit(embed=self.embed(), view=None)
+                await g.message.edit(
+                    embed=self.closed_embed(night_number), view=None
+                )
             except discord.HTTPException:
                 pass
 
@@ -612,13 +641,11 @@ class NightView(discord.ui.View):
                 title="\U0001F3AC The last word",
                 colour=Palette.TOWN_WIN if won == "town" else Palette.MAFIA_WIN,
             )
-            await interaction.followup.send(content=headline, embed=g.final_embed(won))
+            await g.channel.send(content=g.fact(headline), embed=g.final_embed(won))
             return
 
         day_view = DayView(g, headline)
-        g.message = await interaction.followup.send(
-            embed=day_view.embed(), view=day_view, wait=True
-        )
+        g.message = await g.channel.send(embed=day_view.embed(), view=day_view)
 
     @discord.ui.button(
         label="My night action", style=discord.ButtonStyle.primary, emoji="\U0001F311"
@@ -678,7 +705,7 @@ class DayView(discord.ui.View):
     def embed(self) -> discord.Embed:
         emb = discord.Embed(
             title=f"☀️ Day {self.game.day}",
-            description=self.headline,
+            description=self.game.fact(self.headline),
             colour=Palette.DAY,
         )
         self.game.add_roster(emb)
@@ -695,8 +722,8 @@ class DayView(discord.ui.View):
         self.game.votes = {}
         view = VoteView(self.game)
         await interaction.response.edit_message(embed=self.embed(), view=None)
-        self.game.message = await interaction.followup.send(
-            embed=view.embed(), view=view, wait=True
+        self.game.message = await self.game.channel.send(
+            embed=view.embed(), view=view
         )
 
     @discord.ui.button(label="My role", style=discord.ButtonStyle.secondary, emoji="\U0001F3AD")
@@ -794,13 +821,13 @@ class VoteView(discord.ui.View):
                 title="\U0001F3AC The last word",
                 colour=Palette.TOWN_WIN if won == "town" else Palette.MAFIA_WIN,
             )
-            await interaction.followup.send(content=verdict, embed=g.final_embed(won))
+            await g.channel.send(content=g.fact(verdict), embed=g.final_embed(won))
             return
 
         g.night_actions = NightActions()
         night = NightView(g)
-        g.message = await interaction.followup.send(
-            content=verdict, embed=night.embed(), view=night, wait=True
+        g.message = await g.channel.send(
+            content=g.fact(verdict), embed=night.embed(), view=night
         )
 
     @discord.ui.button(label="Vote", style=discord.ButtonStyle.primary, emoji="\U0001F5F3️")
@@ -879,8 +906,8 @@ class RoleRevealView(discord.ui.View):
             ),
             view=None,
         )
-        self.game.message = await interaction.followup.send(
-            embed=night.embed(), view=night, wait=True
+        self.game.message = await self.game.channel.send(
+            embed=night.embed(), view=night
         )
 
 

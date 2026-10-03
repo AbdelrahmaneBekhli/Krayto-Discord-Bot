@@ -16,9 +16,37 @@ log = logging.getLogger(__name__)
 PING = discord.AllowedMentions(users=True, roles=False, everyone=False)
 NO_PING = discord.AllowedMentions.none()
 
-# Seconds between beats. Long enough to read a line and feel the pause, short
-# enough that a five-beat night still lands inside ~13 seconds.
-BEAT_DELAY = 2.6
+# Pacing. A fixed gap made long beats arrive before the last one was read and
+# short ones linger, so the pause is now the time it takes to read the beat
+# that just landed. Casual reading of prose on a phone is roughly four words a
+# second; the floor keeps one-liners from snapping past, the ceiling keeps a
+# long beat from stalling the game.
+WORDS_PER_SECOND = 4.0
+MIN_BEAT_DELAY = 3.2
+MAX_BEAT_DELAY = 8.0
+LEAD_IN_DELAY = 1.8  # before the first beat, under the header
+
+# Kept for callers that want one number; the real pacing is read_time().
+BEAT_DELAY = 4.0
+
+
+def read_time(beat: str) -> float:
+    """How long to leave a beat on screen before the next one lands."""
+    words = len(beat.split())
+    return max(MIN_BEAT_DELAY, min(MAX_BEAT_DELAY, words / WORDS_PER_SECOND))
+
+
+def as_narration(beat: str) -> str:
+    """
+    Render a beat as a quote block.
+
+    Consecutive bot messages get no separation in Discord, so plain narration
+    ran together into a wall. The quote bar gives every beat its own left edge
+    and marks the narrator apart from anything players type.
+    """
+    return "\n".join(
+        f"> {line}" if line.strip() else ">" for line in beat.split("\n")
+    )
 
 OFF, DISCREET, DRAMATIC = "off", "discreet", "dramatic"
 
@@ -469,14 +497,20 @@ async def tell(
         return  # narration is flavour: never let it take the game down
 
     for index, beat in enumerate(beats):
-        await _pause(channel, delay if index else delay * 0.6)
+        # Pause for as long as the *previous* beat takes to read, so the gap
+        # matches what the reader is actually doing.
+        await _pause(channel, LEAD_IN_DELAY if index == 0 else read_time(beats[index - 1]))
         try:
-            await channel.send(beat[:MAX_BEAT_CHARS], allowed_mentions=PING)
+            await channel.send(
+                as_narration(beat)[:MAX_BEAT_CHARS], allowed_mentions=PING
+            )
         except discord.HTTPException:
             if art is not None:
                 art.cancel()
             return
 
+    # Let the closing line land before the picture arrives under it.
+    await _pause(channel, read_time(beats[-1]))
     panel = await _collect_art(art)
     if panel is not None:
         try:

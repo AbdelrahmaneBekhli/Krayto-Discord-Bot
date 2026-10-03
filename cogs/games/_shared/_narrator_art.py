@@ -29,52 +29,61 @@ log = logging.getLogger(__name__)
 # Appended to every panel so a game's nights look like one book rather than a
 # dozen unrelated pictures.
 STYLE = (
-    "moody noir illustration, ink and muted watercolour wash, limited palette of "
-    "slate blue and amber, heavy shadow, 1950s small town, cinematic wide shot, "
-    "grainy, melancholy, no text, no lettering, no faces, no crowds"
+    "noir illustration, ink and watercolour, dramatic chiaroscuro lighting, "
+    "slate blue shadows with warm amber lamplight, 1950s small town, cinematic "
+    "mid shot, clear focal subject, detailed, grainy, melancholy, no text, "
+    "no lettering, no watermark"
 )
 
+# Every scene names a subject and an action. An earlier version banned people
+# from the frame, which produced four variations on "empty street at night" --
+# atmospheric, but you could not tell a murder from a quiet night.
 SCENES: dict[str, tuple[str, ...]] = {
     narrator_ai.KILL: (
-        "a still body lying face down on wet garden stones at grey dawn, "
-        "one shoe off, a washing line overhead, back door standing open",
-        "an overturned chair in an empty kitchen at first light, a kettle still "
-        "steaming, a dark shape on the floor just out of frame",
-        "a narrow alley at dawn, a coat crumpled against the brick, rain "
-        "beginning, a single streetlamp still burning",
-        "a body under a sheet in the middle of a small town square at sunrise, "
-        "bicycles abandoned, shutters closed all around",
+        "a body lying face down on wet garden stones at grey dawn, one arm "
+        "outstretched, a white sheet half drawn over it, two villagers standing "
+        "back with lanterns, washing line overhead",
+        "townspeople crowding a doorway at first light, a still figure slumped "
+        "across the threshold, an overturned chair and a kettle on its side "
+        "inside, one woman turning away",
+        "a covered body on a stretcher being carried through a narrow alley at "
+        "dawn, rain falling, neighbours watching from windows above",
+        "a body under a sheet in the middle of a small town square at sunrise, a "
+        "constable kneeling beside it, villagers gathered in a ring, bicycles "
+        "abandoned on the cobbles",
     ),
-    # Dramatic mode: a rescue. The town already learns somebody lived.
+    # Dramatic mode: a rescue, and it has to look like one.
     narrator_ai.SAVE: (
-        "a dark doorstep at night, a thin wash of blood diluted by rain, an open "
-        "doctor's bag beside it, nobody in sight",
-        "a bedroom at dawn, bandages and a basin of red water on the floor, the "
-        "bed empty and the sheets thrown back, curtains moving",
-        "a wet pavement at night lit by one window, dropped surgical scissors "
-        "glinting, two sets of footprints leading away",
+        "a doctor kneeling over a wounded person in a lamplit doorway at night, "
+        "hands pressing a bandage to their side, open medical bag spilling "
+        "gauze, rain on the step",
+        "two figures dragging a wounded person in from a dark street into warm "
+        "lamplight, blood on the stones behind them, a basin and towels waiting",
+        "a wounded person propped against a wall under a streetlamp, a healer "
+        "winding a bandage around their shoulder, the pair alone in the rain, "
+        "relief on the healer's posture",
     ),
     narrator_ai.BLOCKED: (
-        "an empty small town street at midnight, every door shut, one interior "
-        "light burning behind frosted glass, nothing moving at all",
-        "a locked back gate seen from the inside, chain and padlock, long shadows, "
-        "an untouched lane beyond it",
+        "a hooded figure stopped at a chained gate at midnight, hand on the "
+        "padlock, a constable's lantern raised behind them, empty street beyond",
+        "a locked cell door in a village lock-up at night, a silhouette sitting "
+        "on the bench inside, one lamp burning in the corridor",
     ),
     narrator_ai.QUIET: (
         "an empty small town street at sunrise, milk bottles untouched on every "
-        "step, mist in the road, nothing has happened",
-        "a quiet kitchen window at dawn seen from outside, condensation, an "
-        "undisturbed garden, birds on the fence",
+        "step, mist low in the road, shutters opening, nothing has happened",
+        "a woman opening her curtains at dawn onto a quiet undisturbed garden, "
+        "birds on the fence, kettle steaming on the sill",
     ),
 }
 
-# Discreet mode can't illustrate the rescue without implying who was rescued,
-# so it gets atmosphere instead and gives nothing away.
+# Discreet mode can't show who was rescued, so it shows the aftermath instead:
+# clearly a rescue happened, with no way to tell whose doorstep it was.
 DISCREET_SAVE = (
-    "an empty wet street at night, a dark patch on the stones already thinning "
-    "in the rain, a door closing in the distance",
-    "a deserted lane at first light, one gate swinging open, a dropped bag of "
-    "shopping, no sign of anybody",
+    "an abandoned doctor's bag open on wet cobblestones at night, bloodied gauze "
+    "beside it, a trail of footprints leading away into fog, nobody in frame",
+    "a dark patch of blood on a rain-slicked step at first light, a dropped "
+    "bandage roll unwinding into the gutter, the door shut, street empty",
 )
 
 
@@ -87,7 +96,9 @@ def prompt_for(outcome, mode: str, night: int) -> str | None:
         pool = SCENES.get(variant)
     if not pool:
         return None
-    weather = "clear cold night" if night % 2 else "light rain"
+    # Weather only -- the scenes set their own time of day, and an hour added
+    # here contradicted them ("at sunrise ... clear cold night").
+    weather = "cold clear air" if night % 2 else "steady rain"
     return f"{random.choice(pool)}, {weather}. {STYLE}"
 
 
