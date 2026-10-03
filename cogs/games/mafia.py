@@ -120,6 +120,7 @@ class Player:
     member: discord.Member
     role: Role
     alive: bool = True
+    left: bool = False  # walked out rather than being killed or voted off
 
     @property
     def id(self) -> int:
@@ -213,6 +214,42 @@ class MafiaGame(BaseGame):
         self.night_actions = NightActions()
         self.votes = {}
         self.assign_roles()
+
+    def leave(self, member: discord.abc.User) -> str:
+        """
+        Take a player out mid-game. Returns the line to announce.
+
+        They count as out rather than simply gone: the table has been reasoning
+        about them all game, so their role is revealed exactly as it would be if
+        they had been killed, and any action or vote they had already submitted
+        is withdrawn so the phase doesn't wait on somebody who isn't there.
+        """
+        player = self.cast.get(member.id)
+        name = member.display_name
+        self.drop_player(member)
+
+        self.votes.pop(member.id, None)
+        acts = self.night_actions
+        acts.submitted.discard(member.id)
+        acts.protect.pop(member.id, None)
+        acts.detain.pop(member.id, None)
+        acts.investigate.pop(member.id, None)
+
+        if player is None:
+            return f"\U0001F6AA **{name}** left the game."
+
+        player.alive = False
+        player.left = True
+        if acts.kill == member.id:
+            acts.kill = None  # the Mafia were aiming at somebody who has gone
+        return (
+            f"\U0001F6AA **{name}** left the game — they were "
+            f"{player.role.emoji} **{player.role.name}**."
+        )
+
+    def abandoned(self) -> bool:
+        """Too few left to carry on, with nobody having actually won."""
+        return len(self.living) < 2
 
     def fact(self, text: str) -> str:
         """
@@ -382,7 +419,10 @@ class MafiaGame(BaseGame):
         if dead:
             embed.add_field(
                 name="Out",
-                value=", ".join(f"{p.name} {p.role.emoji}" for p in dead),
+                value=", ".join(
+                    f"{p.name} {p.role.emoji}" + (" *(left)*" if p.left else "")
+                    for p in dead
+                ),
                 inline=False,
             )
         return embed
@@ -519,10 +559,11 @@ class SetupView(discord.ui.View):
 
 class MafiaView(discord.ui.View):
     """
-    Base for every in-game phase: carries the game and the host's controls.
+    Base for every in-game phase: the game, Leave, and the host's controls.
 
-    Restart and End can fire from any phase, so they live here once rather
-    than four times. Each phase supplies its own `embed()`.
+    All three buttons can fire from any phase, so they live here once rather
+    than four times over. Each phase supplies its own `embed()`, and says how
+    to catch up when a departure leaves it able to proceed.
     """
 
     def __init__(self, game: MafiaGame, *, timeout: float = 1800) -> None:
@@ -531,6 +572,17 @@ class MafiaView(discord.ui.View):
 
     def embed(self) -> discord.Embed:  # pragma: no cover - each phase defines it
         raise NotImplementedError
+
+    async def refresh(self) -> None:
+        if self.game.message:
+            try:
+                await self.game.message.edit(embed=self.embed(), view=self)
+            except discord.HTTPException:
+                pass
+
+    async def after_leave(self, interaction: discord.Interaction) -> None:
+        """Catch the phase up once somebody has gone. Overridden per phase."""
+        await self.refresh()
 
     async def _host_only(self, interaction: discord.Interaction) -> bool:
         if self.game.is_host(interaction.user):
@@ -541,8 +593,71 @@ class MafiaView(discord.ui.View):
         )
         return False
 
+    # -- any player ------------------------------------------------------
+
     @discord.ui.button(
-        label="Restart", style=discord.ButtonStyle.secondary, emoji="\U0001F501", row=4
+        label="Leave", style=discord.ButtonStyle.secondary, emoji="🚪", row=4
+    )
+    async def leave_btn(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        g = self.game
+        if interaction.user.id not in g.players:
+            return await interaction.response.send_message(
+                "You're not in this game.", ephemeral=True
+            )
+        player = g.player(interaction.user.id)
+        detail = (
+            "You'll be out of the game and **your role will be revealed**, "
+            "exactly as if you had been killed."
+            if player is not None and player.alive
+            else "You're already out — this only takes you off the list."
+        )
+
+        async def confirmed(inter: discord.Interaction) -> None:
+            note = g.leave(inter.user)
+            try:
+                await g.channel.send(note, allowed_mentions=discord.AllowedMentions.none())
+            except discord.HTTPException:
+                pass
+            await self.on_departure(inter)
+
+        await _confirm.ask(
+            interaction,
+            question="Leave the game?",
+            detail=f"{detail}\n-# You can't rejoin this one.",
+            label="Yes, leave",
+            emoji="🚪",
+            on_confirm=confirmed,
+        )
+
+    async def on_departure(self, interaction: discord.Interaction) -> None:
+        """A departure can finish the game outright -- the last Mafia leaving
+        is a town win -- so settle that before handing back to the phase."""
+        g = self.game
+        if g.finished:
+            return
+        won = g.winner()
+        if won:
+            self.stop()
+            await g.finish()
+            await g.channel.send(embed=g.final_embed(won))
+            return
+        if g.abandoned():
+            self.stop()
+            await g.finish()
+            await g.channel.send(
+                embed=discord.Embed(
+                    title=f"{g.emoji} Mafia",
+                    description="Not enough players left to carry on.",
+                    colour=Palette.OVER,
+                )
+            )
+            return
+        await self.after_leave(interaction)
+
+    # -- host only -------------------------------------------------------
+
+    @discord.ui.button(
+        label="Restart", style=discord.ButtonStyle.secondary, emoji="🔁", row=4
     )
     async def restart_btn(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         if not await self._host_only(interaction):
@@ -580,12 +695,12 @@ class MafiaView(discord.ui.View):
                 "This round's progress is lost."
             ),
             label="Restart",
-            emoji="\U0001F501",
+            emoji="🔁",
             on_confirm=confirmed,
         )
 
     @discord.ui.button(
-        label="End game", style=discord.ButtonStyle.danger, emoji="\U0001F6D1", row=4
+        label="End game", style=discord.ButtonStyle.danger, emoji="🛑", row=4
     )
     async def end_btn(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         if not await self._host_only(interaction):
@@ -613,7 +728,7 @@ class MafiaView(discord.ui.View):
             question="End the game now?",
             detail="Everyone's role is revealed and the game stops. No winner.",
             label="End it",
-            emoji="\U0001F6D1",
+            emoji="🛑",
             on_confirm=confirmed,
         )
 
@@ -668,6 +783,14 @@ class NightView(MafiaView):
         super().__init__(game)
         # Start writing tonight's story now, while everyone is still choosing.
         game.start_story()
+
+    async def after_leave(self, interaction: discord.Interaction) -> None:
+        # They may have been the last person the night was waiting on.
+        actors = {p.id for p in self.game.night_actors()}
+        if actors and actors.issubset(self.game.night_actions.submitted):
+            await self.resolve(interaction)
+        else:
+            await self.refresh()
 
     def embed(self) -> discord.Embed:
         g = self.game
@@ -886,6 +1009,14 @@ class VoteView(MafiaView):
     def __init__(self, game: MafiaGame) -> None:
         super().__init__(game)
 
+    async def after_leave(self, interaction: discord.Interaction) -> None:
+        # They may have been the last vote the day was waiting on.
+        g = self.game
+        if g.votes and len(g.votes) >= len(g.living):
+            await self.close(interaction)
+        else:
+            await self.refresh()
+
     def embed(self) -> discord.Embed:
         g = self.game
         counts = g.tally()
@@ -1010,6 +1141,12 @@ class RoleRevealView(MafiaView):
         super().__init__(game)
         self.seen: set[int] = set()  # players who have looked at their card
 
+    async def after_leave(self, interaction: discord.Interaction) -> None:
+        if self.seen >= set(self.game.players):
+            await self.begin()
+        else:
+            await self.refresh()
+
     def embed(self) -> discord.Embed:
         g = self.game
         emb = discord.Embed(
@@ -1017,10 +1154,13 @@ class RoleRevealView(MafiaView):
             description=f"{g.settings.summary()}\neveryone else is a Villager",
             colour=Palette.LOBBY,
         )
-        waiting = [p.name for p in g.cast.values() if p.id not in self.seen]
+        waiting = [
+            p.name for p in g.cast.values()
+            if p.id in g.players and p.id not in self.seen
+        ]
         if waiting and self.seen:
             emb.add_field(
-                name=f"Looked ({len(self.seen)}/{len(g.cast)})",
+                name=f"Looked ({len(self.seen)}/{len(g.players)})",
                 value="waiting on " + ", ".join(waiting),
                 inline=False,
             )
@@ -1062,7 +1202,7 @@ class RoleRevealView(MafiaView):
         self.seen.add(player.id)
 
         # Once everyone has looked there is nothing left to wait for.
-        if self.seen >= set(self.game.cast):
+        if self.seen >= set(self.game.players):
             return await self.begin()
         if self.game.message:
             try:
