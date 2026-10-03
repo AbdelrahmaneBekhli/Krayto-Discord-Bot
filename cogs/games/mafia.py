@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 import random
 from collections import Counter
 from dataclasses import dataclass, field
@@ -8,11 +10,24 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from cogs import _images as images
+from cogs import _llm as llm
 from cogs._help_registry import HelpEntry
+from cogs.games._shared import _narrator as narrator
+from cogs.games._shared import _narrator_ai as narrator_ai
+from cogs.games._shared import _narrator_art as narrator_art
 from cogs.games._shared._core import BaseGame, Palette, active_game, register
 from cogs.games._shared._lobby import LobbyView
+from cogs.games._shared._narrator import NightOutcome
+
+log = logging.getLogger(__name__)
 
 MAX_OPTIONS = 25  # Discord's hard cap on select options
+
+# How long resolution will wait for AI narration that hasn't landed yet. It was
+# started when the night began, so by now it has had the whole deliberation to
+# finish; this is only the tail. Past it, the built-in templates take over.
+AI_GRACE_SECONDS = 4.0
 
 
 @dataclass(frozen=True)
@@ -69,6 +84,7 @@ class Settings:
     detective: int = 1
     doctor: int = 1
     police: int = 0
+    narration: str = narrator.DRAMATIC
 
     def special_total(self) -> int:
         return self.mafia + self.detective + self.doctor + self.police
@@ -130,14 +146,73 @@ class MafiaGame(BaseGame):
     min_players = 4
     max_players = MAX_OPTIONS
 
-    def __init__(self, channel, host) -> None:
+    def __init__(self, channel, host, bot: commands.Bot) -> None:
         super().__init__(channel, host)
+        self.bot = bot  # narration needs the shared aiohttp session
         self.settings = Settings()
         self.cast: dict[int, Player] = {}
         self.day = 0
         self.night_actions = NightActions()
         self.votes: dict[int, int | None] = {}  # voter id -> target id, None = skip
         self.log: list[str] = []
+        # AI narration for the night in progress, written while players decide.
+        self.story: asyncio.Task | None = None
+
+    # -- narration --------------------------------------------------------
+
+    def start_story(self) -> None:
+        """
+        Kick off AI narration for the night that is just beginning.
+
+        Fire-and-forget on purpose: it runs through the deliberation, and if it
+        never finishes nothing waits on it beyond `AI_GRACE_SECONDS`.
+        """
+        self.story = None
+        if self.settings.narration == narrator.OFF or not llm.configured():
+            return
+        dead = len(self.cast) - len(self.living)
+        coro = narrator_ai.generate(
+            self.bot,
+            night=self.day + 1,
+            alive=len(self.living),
+            dead=dead,
+            mode=self.settings.narration,
+        )
+        try:
+            self.story = asyncio.create_task(coro)
+        except RuntimeError:  # no running loop (tests)
+            coro.close()
+
+    async def prepared_story(self) -> dict[str, list[str]] | None:
+        """Collect the night's AI script, or None if it isn't ready in time."""
+        task, self.story = self.story, None
+        if task is None:
+            return None
+        try:
+            return await asyncio.wait_for(task, AI_GRACE_SECONDS)
+        except asyncio.TimeoutError:
+            log.info("AI narration missed the window; using templates")
+        except Exception:
+            log.warning("AI narration failed", exc_info=True)
+        return None
+
+    def narrator_label(self) -> str:
+        """e.g. 'Narrator: dramatic · ✨ AI · 🖼️ panels'."""
+        label = narrator.NARRATION_LABELS[self.settings.narration]
+        if self.settings.narration == narrator.OFF:
+            return label
+        if llm.configured():
+            label += " · ✨ AI"
+        if images.configured():
+            label += " · \U0001F5BC️ panels"
+        return label
+
+    async def finish(self) -> None:
+        # Don't leave a half-written night running after the game is over.
+        if self.story is not None:
+            self.story.cancel()
+            self.story = None
+        await super().finish()
 
     # -- roster ----------------------------------------------------------
 
@@ -178,7 +253,10 @@ class MafiaGame(BaseGame):
         embed = super().lobby_embed()
         embed.add_field(
             name="Roles",
-            value=f"{self.settings.summary()}\neveryone else is a Villager",
+            value=(
+                f"{self.settings.summary()}\neveryone else is a Villager\n"
+                f"-# \U0001F3A5 {self.narrator_label()}"
+            ),
             inline=False,
         )
         problem = self.settings.validate(self.count)
@@ -189,8 +267,8 @@ class MafiaGame(BaseGame):
 
     # -- night resolution -------------------------------------------------
 
-    def resolve_night(self) -> tuple[Player | None, dict[int, str]]:
-        """Apply the night. Returns (victim or None, detective id -> result text)."""
+    def resolve_night(self) -> NightOutcome:
+        """Apply the night and report what happened, including the near-misses."""
         acts = self.night_actions
 
         # Police act first and can't be blocked, so detentions always land.
@@ -202,17 +280,24 @@ class MafiaGame(BaseGame):
             if doctor_id not in detained
         }
         # Being detained also keeps you alive.
-        protected |= detained
-
-        victim: Player | None = None
         mafia_all_detained = bool(self.living_mafia) and all(
             m.id in detained for m in self.living_mafia
         )
+        outcome = NightOutcome(mafia_blocked=mafia_all_detained)
+
         if acts.kill is not None and not mafia_all_detained:
             target = self.player(acts.kill)
-            if target and target.alive and target.id not in protected:
-                target.alive = False
-                victim = target
+            if target and target.alive:
+                outcome.attacked = target
+                # A save is worth narrating, so record which one landed. The
+                # Doctor takes the credit when both cover the same person.
+                if target.id in protected:
+                    outcome.saved_by_doctor = True
+                elif target.id in detained:
+                    outcome.saved_by_police = True
+                else:
+                    target.alive = False
+                    outcome.victim = target
 
         results: dict[int, str] = {}
         for det_id, target_id in acts.investigate.items():
@@ -225,7 +310,8 @@ class MafiaGame(BaseGame):
             verdict = "**is** Mafia" if target.role.key == "mafia" else "is **not** Mafia"
             results[det_id] = f"{target.name} {verdict}."
 
-        return victim, results
+        outcome.results = results
+        return outcome
 
     # -- voting -----------------------------------------------------------
 
@@ -299,30 +385,39 @@ class MafiaGame(BaseGame):
 # ---------------------------------------------------------------------------
 
 
-class CountSelect(discord.ui.Select):
-    def __init__(self, game: MafiaGame, key: str, lobby_view: LobbyView) -> None:
-        role = ROLES[key]
-        current = getattr(game.settings, key)
-        lowest = 1 if key == "mafia" else 0
-        options = [
-            discord.SelectOption(
-                label=role.counted(n),
-                value=str(n),
-                default=(n == current),
-            )
-            for n in range(lowest, 6)
-        ]
-        super().__init__(placeholder=f"{role.emoji} {role.name}: {current}", options=options)
+def setup_content(game: MafiaGame) -> str:
+    """The host's ephemeral setup panel text, rebuilt after every change."""
+    problem = game.settings.validate(game.count)
+    note = f"\n⚠️ {problem}" if problem else "\n✅ Setup looks good."
+    mode = game.settings.narration
+    writer = "✨ written fresh by AI each night" if (
+        mode != narrator.OFF and llm.configured()
+    ) else "built-in script"
+    if mode != narrator.OFF and images.configured():
+        writer += " · \U0001F5BC️ illustrated"
+    return (
+        f"**Roles:** {game.settings.summary()}\n"
+        f"**Narrator:** {narrator.NARRATION_LABELS[mode].split(': ')[1]} — "
+        f"{narrator.NARRATION_BLURBS[mode]}\n"
+        f"-# {writer}{note}"
+    )
+
+
+class SetupSelect(discord.ui.Select):
+    """Base for the host's setup dropdowns: apply, redraw panel, redraw lobby."""
+
+    def __init__(self, game: MafiaGame, lobby_view: LobbyView, **kwargs) -> None:
+        super().__init__(**kwargs)
         self.game = game
-        self.key = key
         self.lobby_view = lobby_view
 
+    def apply(self) -> None:
+        raise NotImplementedError
+
     async def callback(self, interaction: discord.Interaction) -> None:
-        setattr(self.game.settings, self.key, int(self.values[0]))
-        problem = self.game.settings.validate(self.game.count)
-        note = f"\n⚠️ {problem}" if problem else "\n✅ Setup looks good."
+        self.apply()
         await interaction.response.edit_message(
-            content=f"**Roles:** {self.game.settings.summary()}{note}",
+            content=setup_content(self.game),
             view=SetupView(self.game, self.lobby_view),
         )
         if self.game.message:
@@ -334,11 +429,57 @@ class CountSelect(discord.ui.Select):
                 pass
 
 
+class NarrationSelect(SetupSelect):
+    def __init__(self, game: MafiaGame, lobby_view: LobbyView) -> None:
+        current = game.settings.narration
+        super().__init__(
+            game,
+            lobby_view,
+            placeholder=f"\U0001F3A5 {narrator.NARRATION_LABELS[current]}",
+            options=[
+                discord.SelectOption(
+                    label=narrator.NARRATION_LABELS[mode].split(": ")[1].capitalize(),
+                    value=mode,
+                    description=narrator.NARRATION_BLURBS[mode][:100],
+                    default=(mode == current),
+                )
+                for mode in (narrator.DRAMATIC, narrator.DISCREET, narrator.OFF)
+            ],
+        )
+
+    def apply(self) -> None:
+        self.game.settings.narration = self.values[0]
+
+
+class CountSelect(SetupSelect):
+    def __init__(self, game: MafiaGame, key: str, lobby_view: LobbyView) -> None:
+        role = ROLES[key]
+        current = getattr(game.settings, key)
+        lowest = 1 if key == "mafia" else 0
+        super().__init__(
+            game,
+            lobby_view,
+            placeholder=f"{role.emoji} {role.name}: {current}",
+            options=[
+                discord.SelectOption(
+                    label=role.counted(n), value=str(n), default=(n == current),
+                )
+                for n in range(lowest, 6)
+            ],
+        )
+        self.key = key
+
+    def apply(self) -> None:
+        setattr(self.game.settings, self.key, int(self.values[0]))
+
+
 class SetupView(discord.ui.View):
     def __init__(self, game: MafiaGame, lobby_view: LobbyView) -> None:
         super().__init__(timeout=600)
+        # Five action rows is Discord's cap, and this uses all five.
         for key in CONFIGURABLE:
             self.add_item(CountSelect(game, key, lobby_view))
+        self.add_item(NarrationSelect(game, lobby_view))
 
 
 # ---------------------------------------------------------------------------
@@ -390,6 +531,8 @@ class NightView(discord.ui.View):
     def __init__(self, game: MafiaGame) -> None:
         super().__init__(timeout=1800)
         self.game = game
+        # Start writing tonight's story now, while everyone is still choosing.
+        game.start_story()
 
     def embed(self) -> discord.Embed:
         g = self.game
@@ -420,9 +563,11 @@ class NightView(discord.ui.View):
     async def resolve(self, interaction: discord.Interaction) -> None:
         g = self.game
         self.stop()
-        victim, results = g.resolve_night()
+        outcome = g.resolve_night()
+        victim = outcome.victim
+        night_number = g.day + 1
 
-        for det_id, text in results.items():
+        for det_id, text in outcome.results.items():
             member = g.cast[det_id].member
             try:
                 await member.send(f"\U0001F50D Investigation result: {text}")
@@ -442,9 +587,31 @@ class NightView(discord.ui.View):
             except discord.HTTPException:
                 pass
 
+        # The story goes out before the facts, so the embed reads as the
+        # morning report rather than a spoiler for it. The panel is started here
+        # -- now that the outcome is known -- and the beats drip over the top of
+        # it, which is all the time it needs.
+        prepared = await g.prepared_story()
+        art = narrator_art.start(g, outcome, night_number)
+        await narrator.tell(
+            g.channel,
+            narrator.night_beats(
+                outcome, g.living, night_number, g.settings.narration, prepared
+            ),
+            title=f"\U0001F319 Night {night_number}",
+            colour=Palette.NIGHT,
+            art=art,
+        )
+
         won = g.winner()
         if won:
             await g.finish()
+            await narrator.tell(
+                g.channel,
+                narrator.finale_beats(won, g.settings.narration),
+                title="\U0001F3AC The last word",
+                colour=Palette.TOWN_WIN if won == "town" else Palette.MAFIA_WIN,
+            )
             await interaction.followup.send(content=headline, embed=g.final_embed(won))
             return
 
@@ -601,16 +768,32 @@ class VoteView(discord.ui.View):
     async def close(self, interaction: discord.Interaction) -> None:
         g = self.game
         self.stop()
-        _, verdict = g.vote_result()
+        anyone_voted = bool(g.tally())
+        voted_out, verdict = g.vote_result()
         if g.message:
             try:
                 await g.message.edit(embed=self.embed(), view=None)
             except discord.HTTPException:
                 pass
 
+        await narrator.tell(
+            g.channel,
+            narrator.vote_beats(
+                voted_out, g.settings.narration, anyone_voted=anyone_voted
+            ),
+            title=f"\U0001F5F3️ Day {g.day} verdict",
+            colour=Palette.VOTE,
+        )
+
         won = g.winner()
         if won:
             await g.finish()
+            await narrator.tell(
+                g.channel,
+                narrator.finale_beats(won, g.settings.narration),
+                title="\U0001F3AC The last word",
+                colour=Palette.TOWN_WIN if won == "town" else Palette.MAFIA_WIN,
+            )
             await interaction.followup.send(content=verdict, embed=g.final_embed(won))
             return
 
@@ -711,6 +894,7 @@ class Mafia(commands.Cog):
                 "/mafia  — then everyone taps Join",
                 "Roles → 2 Mafia, 1 Detective, 1 Doctor  (good for 7–9)",
                 "Roles → 1 Mafia, 1 Detective, 0 Doctor  (fast 4–5 player game)",
+                "Roles → Narrator: discreet  (story, but no free information)",
             ],
             show_in_help=True,
             details=(
@@ -726,13 +910,24 @@ class Mafia(commands.Cog):
                 "🚔 **Police** detain someone — they can't act and can't be killed\n"
                 "🧑‍🌾 **Villager** no action, just sit tight\n"
                 "Night resolves as soon as everyone has acted.\n\n"
-                "**3. Day** ☀️ — the bot says who died and what they were. Talk, accuse, "
-                "defend. When you're ready the host taps **Start the vote**.\n\n"
+                "**3. Day** ☀️ — 🎥 the **narrator** tells the night back to you line by "
+                "line: who was wandering about, what nearly happened, and who didn't make "
+                "it. Then the bot states the facts. Talk, accuse, defend. When you're "
+                "ready the host taps **Start the vote**.\n\n"
                 "**4. Vote** 🗳️ — everyone alive votes privately. Most votes is eliminated "
                 "and their role is revealed. **A tie eliminates nobody.** Then night falls "
                 "again.\n\n"
                 "**Winning** — the Town wins when every Mafia is gone. The Mafia win the "
                 "moment they equal the rest of the town.\n\n"
+                "**The narrator** 🎥 — set under **Roles**:\n"
+                "**Dramatic** names the player a Doctor pulled back, so the town learns "
+                "who the Mafia went for\n"
+                "**Discreet** keeps the same story but gives nothing away\n"
+                "**Off** skips straight to the facts\n"
+                "Beats arrive one at a time and **ping the people they name**. "
+                "If an AI provider is set up, the night is written fresh while "
+                "you're all still choosing, and an illustration of the morning "
+                "closes it — both land without costing you any extra waiting.\n\n"
                 "-# The dead can still read the channel, so no hints once you're out."
             ),
         )
@@ -750,12 +945,12 @@ class Mafia(commands.Cog):
                 ephemeral=True,
             )
 
-        game = MafiaGame(interaction.channel, interaction.user)
+        game = MafiaGame(interaction.channel, interaction.user, interaction.client)
         register(game)
 
         async def on_setup(inter: discord.Interaction) -> None:
             await inter.response.send_message(
-                f"**Roles:** {game.settings.summary()}",
+                setup_content(game),
                 view=SetupView(game, lobby),
                 ephemeral=True,
             )
@@ -781,4 +976,8 @@ class Mafia(commands.Cog):
 
 
 async def setup(bot: commands.Bot) -> None:
+    # Said once at startup so a mistyped key shows up here, not mid-game.
+    log.info(
+        "Mafia narrator — text: %s · panels: %s", llm.describe(), images.describe()
+    )
     await bot.add_cog(Mafia(bot))
