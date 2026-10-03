@@ -13,6 +13,7 @@ from discord.ext import commands
 from cogs import _images as images
 from cogs import _llm as llm
 from cogs._help_registry import HelpEntry
+from cogs.games._shared import _confirm
 from cogs.games._shared import _narrator as narrator
 from cogs.games._shared import _narrator_ai as narrator_ai
 from cogs.games._shared import _narrator_art as narrator_art
@@ -195,6 +196,23 @@ class MafiaGame(BaseGame):
         except Exception:
             log.warning("AI narration failed", exc_info=True)
         return None
+
+    def restart(self) -> None:
+        """
+        Deal the same lobby a fresh game.
+
+        Everything derived from the old deal goes: a half-written night would
+        otherwise arrive during the new one, and the old cast is what the
+        roster and the win check read from.
+        """
+        if self.story is not None:
+            self.story.cancel()
+            self.story = None
+        self.cast = {}
+        self.day = 0
+        self.night_actions = NightActions()
+        self.votes = {}
+        self.assign_roles()
 
     def fact(self, text: str) -> str:
         """
@@ -495,6 +513,112 @@ class SetupView(discord.ui.View):
 
 
 # ---------------------------------------------------------------------------
+# Shared phase view
+# ---------------------------------------------------------------------------
+
+
+class MafiaView(discord.ui.View):
+    """
+    Base for every in-game phase: carries the game and the host's controls.
+
+    Restart and End can fire from any phase, so they live here once rather
+    than four times. Each phase supplies its own `embed()`.
+    """
+
+    def __init__(self, game: MafiaGame, *, timeout: float = 1800) -> None:
+        super().__init__(timeout=timeout)
+        self.game = game
+
+    def embed(self) -> discord.Embed:  # pragma: no cover - each phase defines it
+        raise NotImplementedError
+
+    async def _host_only(self, interaction: discord.Interaction) -> bool:
+        if self.game.is_host(interaction.user):
+            return True
+        await interaction.response.send_message(
+            f"Only the host ({self.game.host.display_name}) can do that.",
+            ephemeral=True,
+        )
+        return False
+
+    @discord.ui.button(
+        label="Restart", style=discord.ButtonStyle.secondary, emoji="\U0001F501", row=4
+    )
+    async def restart_btn(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if not await self._host_only(interaction):
+            return
+        g = self.game
+        problem = g.settings.validate(g.count)
+        if problem:
+            return await interaction.response.send_message(problem, ephemeral=True)
+
+        async def confirmed(inter: discord.Interaction) -> None:
+            if g.finished:
+                return
+            self.stop()
+            g.restart()
+            if g.message:
+                try:
+                    await g.message.edit(
+                        embed=discord.Embed(
+                            title=f"{g.emoji} Mafia",
+                            description="-# Restarted by the host.",
+                            colour=Palette.OVER,
+                        ),
+                        view=None,
+                    )
+                except discord.HTTPException:
+                    pass
+            view = RoleRevealView(g)
+            g.message = await g.channel.send(embed=view.embed(), view=view)
+
+        await _confirm.ask(
+            interaction,
+            question="Restart the game?",
+            detail=(
+                f"Same {g.count} players, roles dealt again from scratch. "
+                "This round's progress is lost."
+            ),
+            label="Restart",
+            emoji="\U0001F501",
+            on_confirm=confirmed,
+        )
+
+    @discord.ui.button(
+        label="End game", style=discord.ButtonStyle.danger, emoji="\U0001F6D1", row=4
+    )
+    async def end_btn(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if not await self._host_only(interaction):
+            return
+        g = self.game
+
+        async def confirmed(inter: discord.Interaction) -> None:
+            if g.finished:
+                return
+            self.stop()
+            await g.finish()
+            if g.message:
+                try:
+                    await g.message.edit(view=None)
+                except discord.HTTPException:
+                    pass
+            emb = g.final_embed("town") if not g.living_mafia else g.final_embed("mafia")
+            emb.title = f"{g.emoji} Mafia — ended"
+            emb.description = "The host called it. Everyone's role is below."
+            emb.colour = Palette.OVER
+            await g.channel.send(embed=emb)
+
+        await _confirm.ask(
+            interaction,
+            question="End the game now?",
+            detail="Everyone's role is revealed and the game stops. No winner.",
+            label="End it",
+            emoji="\U0001F6D1",
+            on_confirm=confirmed,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Night
 # ---------------------------------------------------------------------------
 
@@ -539,10 +663,9 @@ class NightActionPrompt(discord.ui.View):
         self.add_item(TargetSelect(game, actor, night_view))
 
 
-class NightView(discord.ui.View):
+class NightView(MafiaView):
     def __init__(self, game: MafiaGame) -> None:
-        super().__init__(timeout=1800)
-        self.game = game
+        super().__init__(game)
         # Start writing tonight's story now, while everyone is still choosing.
         game.start_story()
 
@@ -696,10 +819,9 @@ class NightView(discord.ui.View):
 # ---------------------------------------------------------------------------
 
 
-class DayView(discord.ui.View):
+class DayView(MafiaView):
     def __init__(self, game: MafiaGame, headline: str) -> None:
-        super().__init__(timeout=1800)
-        self.game = game
+        super().__init__(game)
         self.headline = headline
 
     def embed(self) -> discord.Embed:
@@ -760,10 +882,9 @@ class VotePrompt(discord.ui.View):
         self.add_item(VoteSelect(game, vote_view))
 
 
-class VoteView(discord.ui.View):
+class VoteView(MafiaView):
     def __init__(self, game: MafiaGame) -> None:
-        super().__init__(timeout=1800)
-        self.game = game
+        super().__init__(game)
 
     def embed(self) -> discord.Embed:
         g = self.game
@@ -882,12 +1003,11 @@ async def send_role_card(game: MafiaGame, interaction: discord.Interaction) -> N
     await interaction.response.send_message(text, ephemeral=True)
 
 
-class RoleRevealView(discord.ui.View):
+class RoleRevealView(MafiaView):
     """Shown once at game start so everyone can privately read their card."""
 
     def __init__(self, game: MafiaGame) -> None:
-        super().__init__(timeout=1800)
-        self.game = game
+        super().__init__(game)
         self.seen: set[int] = set()  # players who have looked at their card
 
     def embed(self) -> discord.Embed:
@@ -1005,6 +1125,9 @@ class Mafia(commands.Cog):
                 "If an AI provider is set up, the night is written fresh while "
                 "you're all still choosing, and an illustration of the morning "
                 "closes it — both land without costing you any extra waiting.\n\n"
+                "**The host** 🔁 can **Restart** (same players, roles dealt again) or "
+                "**End game** (everyone's role revealed, no winner) from any phase. "
+                "Both ask first.\n\n"
                 "-# The dead can still read the channel, so no hints once you're out."
             ),
         )

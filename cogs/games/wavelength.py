@@ -8,6 +8,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from cogs._help_registry import HelpEntry
+from cogs.games._shared import _confirm
 from cogs.games._shared._core import BaseGame, Palette, active_game, register
 from cogs.games._shared._lobby import LobbyView
 
@@ -111,6 +112,13 @@ class WavelengthGame(BaseGame):
         self.clue = None
         self.guesses = {}
         return True
+
+    def restart(self) -> None:
+        """Same lobby, scores wiped, a fresh turn order and fresh spectrums."""
+        self.round_index = -1
+        self.unused = SPECTRUMS.copy()
+        self.begin()
+        self.next_round()
 
     def scoreboard(self) -> str:
         ranked = sorted(self.scores.items(), key=lambda kv: kv[1], reverse=True)
@@ -259,6 +267,8 @@ class RoundView(discord.ui.View):
         self.clear_items()
         self.add_item(self.guess_btn)
         self.add_item(self.reveal_btn)
+        self.add_item(self.restart_btn)
+        self.add_item(self.end_btn)
 
         g = self.game
         await interaction.response.send_message(
@@ -305,6 +315,90 @@ class RoundView(discord.ui.View):
             f"{spectrum_line(g.left, g.right)}\nClue: **“{g.clue}”**",
             view=GuessPrompt(self),
             ephemeral=True,
+        )
+
+    async def _host_only(self, interaction: discord.Interaction) -> bool:
+        if self.game.is_host(interaction.user):
+            return True
+        await interaction.response.send_message(
+            f"Only the host ({self.game.host.display_name}) can do that.",
+            ephemeral=True,
+        )
+        return False
+
+    @discord.ui.button(
+        label="Restart", style=discord.ButtonStyle.secondary, emoji="\U0001F501", row=4
+    )
+    async def restart_btn(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if not await self._host_only(interaction):
+            return
+        g = self.game
+
+        async def confirmed(inter: discord.Interaction) -> None:
+            if g.finished:
+                return
+            self.stop()
+            g.restart()
+            if g.message:
+                try:
+                    await g.message.edit(
+                        embed=discord.Embed(
+                            title=f"{g.emoji} Wavelength",
+                            description="-# Restarted by the host.",
+                            colour=Palette.OVER,
+                        ),
+                        view=None,
+                    )
+                except discord.HTTPException:
+                    pass
+            view = RoundView(g)
+            g.message = await g.channel.send(embed=view.clue_embed(), view=view)
+
+        await _confirm.ask(
+            interaction,
+            question="Restart the game?",
+            detail=(
+                f"Same {g.count} players, scores back to zero, everyone is "
+                "Psychic again. This round is lost."
+            ),
+            label="Restart",
+            emoji="\U0001F501",
+            on_confirm=confirmed,
+        )
+
+    @discord.ui.button(
+        label="End game", style=discord.ButtonStyle.danger, emoji="\U0001F6D1", row=4
+    )
+    async def end_btn(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if not await self._host_only(interaction):
+            return
+        g = self.game
+
+        async def confirmed(inter: discord.Interaction) -> None:
+            if g.finished:
+                return
+            self.stop()
+            await g.finish()
+            if g.message:
+                try:
+                    await g.message.edit(view=None)
+                except discord.HTTPException:
+                    pass
+            emb = discord.Embed(
+                title="\U0001F4E1 Wavelength — ended",
+                description=g.scoreboard() or "No scores yet.",
+                colour=Palette.OVER,
+            )
+            emb.set_footer(text="The host called it · /wavelength to go again")
+            await g.channel.send(embed=emb)
+
+        await _confirm.ask(
+            interaction,
+            question="End the game now?",
+            detail="Scores so far go up and the game stops.",
+            label="End it",
+            emoji="\U0001F6D1",
+            on_confirm=confirmed,
         )
 
     @discord.ui.button(label="Reveal", style=discord.ButtonStyle.danger, emoji="\U0001F440")
@@ -459,6 +553,8 @@ class Wavelength(commands.Cog):
                 "further — nothing\n\n"
                 "The **Psychic scores the average of their guessers**, so a clue that lands "
                 "the whole room beats a clever one only your best friend gets.\n\n"
+                "**The host** 🔁 can **Restart** (same players, scores reset) or "
+                "**End game** (scores so far, then stop) at any point. Both ask first.\n\n"
                 "Everyone is Psychic exactly once, then the final scores go up. "
                 "45 different scales, and a game never repeats one."
             ),
