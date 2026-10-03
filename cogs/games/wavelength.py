@@ -7,7 +7,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from cogs._help_registry import HelpEntry
-from cogs.games._shared._core import BaseGame, Palette, active_game, bar, register
+from cogs.games._shared._core import BaseGame, Palette, active_game, register
 from cogs.games._shared._lobby import LobbyView
 
 SLOTS = 10
@@ -34,10 +34,6 @@ SPECTRUMS = [
     ("Overpriced snack", "Great value snack"), ("Lazy", "Hard-working"),
     ("Bad idea at 3am", "Good idea at 3am"),
 ]
-
-
-def gauge(position: int) -> str:
-    return f"`{bar(position, SLOTS)}`"
 
 
 def spectrum_line(left: str, right: str) -> str:
@@ -155,8 +151,16 @@ class ClueModal(discord.ui.Modal):
 
 class GuessSelect(discord.ui.Select):
     def __init__(self, round_view: "RoundView") -> None:
+        # Only the two ends carry a description. A slider drawn beside every
+        # number just asked people to read a dot's position off a value that
+        # was already written next to it.
+        g = round_view.game
         options = [
-            discord.SelectOption(label=str(i), description=bar(i, SLOTS), value=str(i))
+            discord.SelectOption(
+                label=str(i),
+                value=str(i),
+                description=(g.left if i == 1 else g.right if i == SLOTS else None),
+            )
             for i in range(1, SLOTS + 1)
         ]
         super().__init__(placeholder="Where on the scale?", options=options)
@@ -167,7 +171,7 @@ class GuessSelect(discord.ui.Select):
         g = self.round_view.game
         g.guesses[interaction.user.id] = guess
         await interaction.response.edit_message(
-            content=f"Locked in: {gauge(guess)} (**{guess}**)", view=None
+            content=f"Locked in: **{guess}**", view=None
         )
         # Nothing left to wait for once every guesser is in.
         if len(g.guesses) >= len(g.guessers):
@@ -249,8 +253,8 @@ class RoundView(discord.ui.View):
 
         g = self.game
         await interaction.response.send_message(
-            f"✅ Clue sent: **“{g.clue}”**\nYour spot was {gauge(g.target)} "
-            f"(**{g.target}**). Sit tight.",
+            f"✅ Clue sent: **“{g.clue}”**\n"
+            f"Your spot was **{g.target}**. Sit tight.",
             ephemeral=True,
         )
         if g.message:
@@ -332,10 +336,7 @@ class RoundView(discord.ui.View):
         g = self.game
         emb = discord.Embed(
             title=f"\U0001F4E1 Round {g.round_index + 1} — the spot was {g.target}",
-            description=(
-                f"{spectrum_line(g.left, g.right)}\n"
-                f"{gauge(g.target)} **{g.target}**"
-            ),
+            description=spectrum_line(g.left, g.right),
             colour=Palette.REVEAL,
         )
 
@@ -360,8 +361,7 @@ class RoundView(discord.ui.View):
             gap = abs(guess - g.target)
             how = "spot on" if gap == 0 else f"{gap} off"
             lines.append(
-                f"{mark} **{member.display_name}** guessed **{guess}** "
-                f"{gauge(guess)} {how} · **+{points}**"
+                f"{mark} **{guess}** — {member.display_name} · {how} · **+{points}**"
             )
 
         # The Psychic scores the average of their guessers, so a good clue pays.
