@@ -41,7 +41,17 @@ def gauge(position: int) -> str:
 
 
 def spectrum_line(left: str, right: str) -> str:
-    return f"**{left}**  ◀━━━━━━━━━▶  **{right}**"
+    """The scale, with the numbers people actually pick between on the ends."""
+    return f"**1 · {left}**  ◀━━━━━━━━━▶  **{right} · {SLOTS}**"
+
+
+def _scale_label(left: str, right: str) -> str:
+    """Same scale squeezed into a modal field label, which caps at 45 chars."""
+    label = f"1={left} … {SLOTS}={right}"
+    if len(label) <= 45:
+        return label
+    room = (45 - len(f"1= … {SLOTS}=")) // 2
+    return f"1={left[:room]} … {SLOTS}={right[:room]}"
 
 
 def score_for(guess: int, target: int) -> int:
@@ -118,20 +128,29 @@ class WavelengthGame(BaseGame):
         return embed
 
 
-class ClueModal(discord.ui.Modal, title="Your clue"):
-    clue = discord.ui.TextInput(
-        label="One word or short phrase",
-        placeholder="something that sits exactly on your secret spot",
-        max_length=80,
-    )
+class ClueModal(discord.ui.Modal):
+    """
+    The Psychic's secret spot and their clue box, in one step.
+
+    The spot rides along in the modal's own title and field label, so opening
+    this *is* seeing your spot -- no separate reveal message, and no second
+    button to get from there to here.
+    """
 
     def __init__(self, round_view: "RoundView") -> None:
-        super().__init__()
+        g = round_view.game
+        super().__init__(title=f"Your secret spot: {g.target} of {SLOTS}")
         self.round_view = round_view
+        self.clue = discord.ui.TextInput(
+            label=_scale_label(g.left, g.right),
+            placeholder="one word or phrase that sits exactly on your spot",
+            max_length=80,
+        )
+        self.add_item(self.clue)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         self.round_view.game.clue = str(self.clue).strip()
-        await self.round_view.show_guessing(interaction)
+        await self.round_view.open_guessing(interaction)
 
 
 class GuessSelect(discord.ui.Select):
@@ -145,12 +164,16 @@ class GuessSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         guess = int(self.values[0])
-        self.round_view.game.guesses[interaction.user.id] = guess
+        g = self.round_view.game
+        g.guesses[interaction.user.id] = guess
         await interaction.response.edit_message(
-            content=f"Locked in: {gauge(guess)}  You can change it until the reveal.",
-            view=None,
+            content=f"Locked in: {gauge(guess)} (**{guess}**)", view=None
         )
-        await self.round_view.refresh_public()
+        # Nothing left to wait for once every guesser is in.
+        if len(g.guesses) >= len(g.guessers):
+            await self.round_view.do_reveal()
+        else:
+            await self.round_view.refresh_public()
 
 
 class GuessPrompt(discord.ui.View):
@@ -188,12 +211,19 @@ class RoundView(discord.ui.View):
 
     def guessing_embed(self) -> discord.Embed:
         g = self.game
-        remaining = len(g.guessers) - len(g.guesses)
-        tail = "" if remaining else " · everyone's in, reveal when ready"
         psychic = g.psychic.display_name if g.psychic else "?"
         emb = self._base_embed()
         emb.add_field(name=f"{psychic} says", value=f"**“{g.clue}”**", inline=False)
-        emb.set_footer(text=f"{len(g.guesses)}/{len(g.guessers)} guessed{tail}")
+        waiting = [m.display_name for m in g.guessers if m.id not in g.guesses]
+        if waiting:
+            emb.add_field(
+                name=f"Guessed ({len(g.guesses)}/{len(g.guessers)})",
+                value="waiting on " + ", ".join(waiting),
+                inline=False,
+            )
+        emb.set_footer(
+            text="Tap Guess and pick 1–10 · the spot shows once everyone has guessed"
+        )
         return emb
 
     async def refresh_public(self) -> None:
@@ -203,11 +233,31 @@ class RoundView(discord.ui.View):
             except discord.HTTPException:
                 pass
 
-    async def show_guessing(self, interaction: discord.Interaction) -> None:
+    async def open_guessing(self, interaction: discord.Interaction) -> None:
+        """
+        Put the board into guessing mode after the Psychic submits a clue.
+
+        The modal opens from the Psychic's own button, so `interaction` here
+        belongs to that private exchange, not to the public card. Editing the
+        interaction's message put the whole guessing board inside an ephemeral
+        only the Psychic could see, while everyone else watched a card that
+        still said "waiting for a clue".
+        """
         self.clear_items()
         self.add_item(self.guess_btn)
         self.add_item(self.reveal_btn)
-        await interaction.response.edit_message(embed=self.guessing_embed(), view=self)
+
+        g = self.game
+        await interaction.response.send_message(
+            f"✅ Clue sent: **“{g.clue}”**\nYour spot was {gauge(g.target)} "
+            f"(**{g.target}**). Sit tight.",
+            ephemeral=True,
+        )
+        if g.message:
+            try:
+                await g.message.edit(embed=self.guessing_embed(), view=self)
+            except discord.HTTPException:
+                pass
 
     # -- buttons ---------------------------------------------------------
 
@@ -224,15 +274,8 @@ class RoundView(discord.ui.View):
             return await interaction.response.send_message(
                 "You already gave your clue.", ephemeral=True
             )
-        await interaction.response.send_message(
-            f"{spectrum_line(g.left, g.right)}\n"
-            f"Your secret spot: {gauge(g.target)} (**{g.target}**)\n"
-            "-# Give a clue that sits exactly there. No numbers, no pointing.",
-            ephemeral=True,
-        )
-        await interaction.followup.send(
-            "Ready?", view=_ClueLauncher(self), ephemeral=True
-        )
+        # Straight into the modal: it carries the spot and the scale itself.
+        await interaction.response.send_modal(ClueModal(self))
 
     @discord.ui.button(label="Guess", style=discord.ButtonStyle.success, emoji="\U0001F3AF")
     async def guess_btn(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
@@ -263,9 +306,27 @@ class RoundView(discord.ui.View):
             return await interaction.response.send_message(
                 "Nobody has guessed yet.", ephemeral=True
             )
+        await interaction.response.defer()
+        await self.do_reveal()
+
+    async def do_reveal(self) -> None:
+        """
+        Show the spot and move on. Safe to call without a live interaction.
+
+        reveal_embed() awards the points, so stopping first keeps a late guess
+        landing at the same moment as the host's button from scoring twice.
+        """
+        if self.is_finished():
+            return
         self.stop()
-        await interaction.response.edit_message(embed=self.reveal_embed(), view=None)
-        await advance(g, interaction)
+        g = self.game
+        emb = self.reveal_embed()
+        if g.message:
+            try:
+                await g.message.edit(embed=emb, view=None)
+            except discord.HTTPException:
+                pass
+        await advance(g)
 
     def reveal_embed(self) -> discord.Embed:
         g = self.game
@@ -298,20 +359,7 @@ class RoundView(discord.ui.View):
         return emb
 
 
-class _ClueLauncher(discord.ui.View):
-    """A modal can only open from a fresh interaction, so this gives us one."""
-
-    def __init__(self, round_view: RoundView) -> None:
-        super().__init__(timeout=600)
-        self.round_view = round_view
-
-    @discord.ui.button(label="Write my clue", style=discord.ButtonStyle.primary, emoji="✏️")
-    async def write(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        await interaction.response.send_modal(ClueModal(self.round_view))
-        self.stop()
-
-
-async def advance(game: WavelengthGame, interaction: discord.Interaction) -> None:
+async def advance(game: WavelengthGame) -> None:
     """Start the next round, or finish the game."""
     if not game.next_round():
         await game.finish()
@@ -321,13 +369,11 @@ async def advance(game: WavelengthGame, interaction: discord.Interaction) -> Non
             colour=Palette.REVEAL,
         )
         emb.set_footer(text="/wavelength to go again")
-        await interaction.followup.send(embed=emb)
+        await game.channel.send(embed=emb)
         return
 
     view = RoundView(game)
-    game.message = await interaction.followup.send(
-        embed=view.clue_embed(), view=view, wait=True
-    )
+    game.message = await game.channel.send(embed=view.clue_embed(), view=view)
 
 
 class Wavelength(commands.Cog):
@@ -394,8 +440,8 @@ class Wavelength(commands.Cog):
                 ),
                 view=None,
             )
-            game.message = await inter.followup.send(
-                embed=view.clue_embed(), view=view, wait=True
+            game.message = await game.channel.send(
+                embed=view.clue_embed(), view=view
             )
 
         lobby = LobbyView(game, on_start=on_start)
