@@ -332,12 +332,24 @@ class RoundView(discord.ui.View):
         g = self.game
         emb = discord.Embed(
             title=f"\U0001F4E1 Round {g.round_index + 1} — the spot was {g.target}",
-            description=f"{spectrum_line(g.left, g.right)}\n{gauge(g.target)}",
+            description=(
+                f"{spectrum_line(g.left, g.right)}\n"
+                f"{gauge(g.target)} **{g.target}**"
+            ),
             colour=Palette.REVEAL,
         )
 
+        # Closest first, so the reveal reads as a ranking rather than a roster.
+        ordered = sorted(
+            g.guessers,
+            key=lambda m: (
+                g.guesses.get(m.id) is None,
+                abs(g.guesses.get(m.id, 0) - g.target),
+            ),
+        )
+
         lines = []
-        for member in g.guessers:
+        for member in ordered:
             guess = g.guesses.get(member.id)
             if guess is None:
                 lines.append(f"• {member.display_name} — didn't guess")
@@ -345,14 +357,27 @@ class RoundView(discord.ui.View):
             points = score_for(guess, g.target)
             g.scores[member.id] = g.scores.get(member.id, 0) + points
             mark = "\U0001F3AF" if points == 4 else ("✨" if points else "•")
-            lines.append(f"{mark} {member.display_name} {gauge(guess)} **+{points}**")
+            gap = abs(guess - g.target)
+            how = "spot on" if gap == 0 else f"{gap} off"
+            lines.append(
+                f"{mark} **{member.display_name}** guessed **{guess}** "
+                f"{gauge(guess)} {how} · **+{points}**"
+            )
 
         # The Psychic scores the average of their guessers, so a good clue pays.
-        scored = [score_for(v, g.target) for v in g.guesses.values()]
+        # Read only the guessers' own picks, never the whole guess map, so the
+        # Psychic can never end up averaging against themselves.
+        landed = [g.guesses[m.id] for m in g.guessers if m.id in g.guesses]
+        scored = [score_for(v, g.target) for v in landed]
         bonus = round(sum(scored) / len(scored)) if scored else 0
         if g.psychic:
             g.scores[g.psychic.id] = g.scores.get(g.psychic.id, 0) + bonus
-            lines.append(f"\U0001F52E {g.psychic.display_name} (Psychic) **+{bonus}**")
+            spread = sorted(landed)
+            reach = f"{spread[0]}–{spread[-1]}" if spread else "nobody"
+            lines.append(
+                f"\U0001F52E **{g.psychic.display_name}** (Psychic) — "
+                f"the room landed {reach} · **+{bonus}**"
+            )
 
         emb.add_field(name=f"Clue: “{g.clue}”", value="\n".join(lines), inline=False)
         emb.add_field(name="Scores", value=g.scoreboard(), inline=False)
