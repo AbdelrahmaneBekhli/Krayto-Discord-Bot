@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import random
 
 import discord
@@ -11,6 +12,14 @@ from cogs.games._shared._core import BaseGame, Palette, active_game, register
 from cogs.games._shared._lobby import LobbyView
 
 SLOTS = 10
+
+# How long the scores sit on their own before the next round lands under them.
+# The round used to end and restart in the same instant, which buried the
+# reveal and left people scrolling up to find out how they had done. Longer
+# tables take longer to read, so this grows a little with the player count.
+INTERMISSION = 7.0
+INTERMISSION_PER_PLAYER = 0.6
+INTERMISSION_MAX = 13.0
 
 # Left pole, right pole.
 SPECTRUMS = [
@@ -325,11 +334,17 @@ class RoundView(discord.ui.View):
         self.stop()
         g = self.game
         emb = self.reveal_embed()
+        more_rounds = g.round_index + 1 < len(g.order)
+        emb.set_footer(
+            text="Next round in a moment…" if more_rounds
+            else "That was the last round — final scores coming up…"
+        )
         if g.message:
             try:
                 await g.message.edit(embed=emb, view=None)
             except discord.HTTPException:
                 pass
+        await intermission(g)
         await advance(g)
 
     def reveal_embed(self) -> discord.Embed:
@@ -382,6 +397,19 @@ class RoundView(discord.ui.View):
         emb.add_field(name=f"Clue: “{g.clue}”", value="\n".join(lines), inline=False)
         emb.add_field(name="Scores", value=g.scoreboard(), inline=False)
         return emb
+
+
+async def intermission(game: WavelengthGame) -> None:
+    """Leave the scores up long enough to read, with the typing dots showing."""
+    delay = min(
+        INTERMISSION_MAX,
+        INTERMISSION + INTERMISSION_PER_PLAYER * len(game.players),
+    )
+    try:
+        async with game.channel.typing():
+            await asyncio.sleep(delay)
+    except discord.HTTPException:
+        await asyncio.sleep(delay)
 
 
 async def advance(game: WavelengthGame) -> None:
