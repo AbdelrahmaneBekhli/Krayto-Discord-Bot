@@ -37,7 +37,12 @@ ALLOWED: dict[str, set[str]] = {
     QUIET: BYSTANDERS,
 }
 
-MIN_BEATS, MAX_BEATS = 3, 6
+MIN_BEATS, MAX_BEATS = 3, 5
+
+# The placeholder that ends each kind of night. Once it lands the story is
+# over, so anything the model wrote after it is dropped -- otherwise a night
+# reveals the body and then keeps building toward the death that just happened.
+CLOSER = {KILL: "{victim}", SAVE: "{attacked}"}
 
 # Either a {placeholder} or a brace loose in the prose. Placeholder first, so
 # `{a}` is read as one and only a genuinely orphaned brace hits group 2.
@@ -58,7 +63,13 @@ SYSTEM = (
     "- Players are real people whose gender you do not know. Refer to them as "
     "they/them, always, or avoid the pronoun. Never he, she, him or her.\n"
     "- Each beat is one or two short lines of prose. No bullet points, no "
-    "headings, no stage directions, no 'Beat 1:' labels."
+    "headings, no stage directions, no 'Beat 1:' labels.\n"
+    "- Finish every sentence. A beat that stops mid-clause is worse than a "
+    "long one.\n"
+    "- Never put words in a player's mouth. No dialogue, no quotation marks.\n"
+    "- This is a crime story, not a fantasy. The healer is an ordinary country "
+    "doctor with a bag and a steady hand: no magic, no glowing hands, nothing "
+    "supernatural anywhere."
 )
 
 
@@ -82,14 +93,19 @@ def _prompt(*, night: int, alive: int, dead: int, name_saved: bool) -> str:
         f"open with its own atmosphere. Each version is {MIN_BEATS}-{MAX_BEATS} "
         "beats, posted one at a time about three seconds apart, so every beat "
         "should end on a small hook.\n\n"
-        "Give each beat room: two or three sentences, 20 to 50 words, and let "
-        "the last sentence land the turn. Single-line fragments read as notes "
-        "toward a story rather than the story itself.\n\n"
+        "Keep every beat SHORT: one or two complete sentences, 12 to 28 words, "
+        "never more. These arrive as chat messages and a beat that wraps onto "
+        "three lines stops being a beat and becomes a paragraph. Cut adjectives "
+        "before you cut facts, and never cut a sentence off to fit.\n\n"
+        "Plain, concrete language. One image per beat, not three. No similes "
+        "about ink or glass, no sentences explaining how the silence felt -- "
+        "say what is there and let it do the work.\n\n"
         "Placeholders are filled in later with real player mentions:\n"
-        "  {a} {b} {c} - living players with nothing to do with tonight. Use "
-        "them for a red herring: somebody hears a scream, fears the worst, and "
-        "it turns out to be {b} being loud. This misdirection is the best part "
-        "of the job -- do it every version.\n"
+        "  {a} {b} {c} - living players with nothing to do with tonight. Every "
+        "version gets one misdirection beat built from TWO of them: {a} fears "
+        "the worst, and the cause turns out to be {b} doing something harmless. "
+        "Name both. A beat that uses only {b} is not a misdirection, it is just "
+        "a noise, and this is the best part of the job.\n"
         "  {victim} - the player who died. Only in \"kill\".\n"
         "  {role} - the dead player's revealed role, arriving already bold and "
         "with its own emoji. It goes at the END of the SAME beat that names "
@@ -97,10 +113,12 @@ def _prompt(*, night: int, alive: int, dead: int, name_saved: bool) -> str:
         "containing only a role is not a sentence. Only in \"kill\".\n"
         "  {attacked} - see below.\n\n"
         "The four versions:\n"
-        "  \"kill\"    - somebody was killed. Build to it: the approach, the "
-        "moment, then the body found at dawn and {victim} named with {role}.\n"
+        "  \"kill\"    - somebody was killed. Build to it in order: the "
+        "approach, then the moment, then the body found at dawn. {victim} and "
+        "{role} belong in the LAST beat and nowhere else -- once the body is "
+        "named the story is over, so nothing may come after it.\n"
         f"  \"save\"    - they went out and failed. Someone was attacked and a "
-        f"healer got there first. {saved_rule}\n"
+        f"healer got there first. {saved_rule} That beat is the last one.\n"
         "  \"blocked\" - nobody who moves at night managed to get out at all. "
         "Name nobody but {a}/{b}/{c}. An empty, uneasy night.\n"
         "  \"quiet\"   - nothing happened. The town waits all night for a "
@@ -133,6 +151,38 @@ def _scrub(beat: str, allowed: set[str]) -> str:
     return PLACEHOLDER.sub(replace, beat)
 
 
+def _close_sentence(beat: str) -> str:
+    """
+    Put a full stop after a beat that ends on a placeholder.
+
+    `{role}` arrives as bold text with an emoji, so a beat finishing on it
+    rendered as "...lies still. 🔍 **Detective**" with nothing to close it.
+    """
+    stripped = beat.rstrip()
+    if stripped.endswith("}"):
+        return stripped + "."
+    return beat
+
+
+def _end_at_closer(beats: list[str], variant: str, allowed: set[str]) -> list[str]:
+    """
+    Stop the story at the beat that reveals the body, or the rescue.
+
+    Asked for it last, models still sometimes open with it and then carry on
+    building toward a death the reader has already been told about. Truncating
+    is safe: anything after the reveal is by definition aftermath. If that
+    leaves too few beats the variant fails validation and the built-in script
+    covers that night instead.
+    """
+    token = CLOSER.get(variant)
+    if not token or token.strip("{}") not in allowed:
+        return beats
+    for index, beat in enumerate(beats):
+        if token in beat:
+            return beats[: index + 1]
+    return beats
+
+
 def _clean(payload: dict, *, name_saved: bool) -> dict[str, list[str]] | None:
     """Keep only variants that came back usable. Partial results are fine."""
     out: dict[str, list[str]] = {}
@@ -144,10 +194,11 @@ def _clean(payload: dict, *, name_saved: bool) -> dict[str, list[str]] | None:
         if variant == SAVE and not name_saved:
             allowed.discard("attacked")  # discreet mode: strip it even if asked for
         beats = [
-            _scrub(str(item).strip(), allowed)
+            _close_sentence(_scrub(str(item).strip(), allowed))
             for item in raw[:MAX_BEATS]
             if isinstance(item, str) and item.strip()
         ]
+        beats = _end_at_closer(beats, variant, allowed)
         if len(beats) >= MIN_BEATS:
             out[variant] = beats
     return out or None

@@ -92,32 +92,26 @@ LATER_NIGHT = (
 # Red-herring cameos: pure atmosphere, zero information. The two-name versions
 # come first because the fake-out reads better with a second person in it.
 CAMEO_PAIR = (
-    "{a} is walking the long hallway home when a scream cuts the air — "
-    "a familiar voice, pitched wrong. Murder?\n"
-    "No. Just {b}, three drinks in, winning an argument with nobody. "
-    "{a} joins the party. {a} will be glad of that alibi later.",
+    "{a} hears a scream in the hallway. Murder?\n"
+    "No — just {b}, three drinks in, arguing with nobody. {a} joins the party.",
 
-    "{a} is certain there is someone behind the hedge, and turns around.\n"
-    "It is {b}, holding a bin bag, deeply embarrassed. They laugh about it. "
-    "One of them is lying about something tonight, but not about this.",
+    "{a} is sure someone is behind the hedge, and turns.\n"
+    "It is {b}, holding a bin bag, mortified.",
 
-    "A floorboard goes off like a gunshot and {a} freezes halfway up the stairs.\n"
-    "Down the hall, {b} is asleep with the television on. {a} breathes again "
-    "and keeps climbing.",
+    "A floorboard cracks like a gunshot. {a} freezes on the stairs.\n"
+    "Down the hall, {b} is asleep with the television on.",
 
-    "{a} and {b} meet on the corner and agree to walk together, "
-    "because nobody should be alone tonight.\n"
-    "They part at the crossroads. It seemed like a good idea at the time.",
+    "{a} and {b} walk home together, because nobody should be alone tonight.\n"
+    "They part at the crossroads.",
 
     "{a} texts {b}: *you up?*\n"
-    "{b} is up. {b} is very up. {b} has been standing at the window for an hour "
-    "and would rather not say why.",
+    "{b} is up. {b} has been at the window for an hour and won't say why.",
 
-    "{a} hears a car idle outside for ninety seconds, then pull away.\n"
-    "{b}, two doors down, hears nothing at all. One of them is telling the truth.",
+    "{a} hears a car idle outside, then pull away.\n"
+    "{b}, two doors down, hears nothing. One of them is telling the truth.",
 
-    "{a} swears the back gate was shut. {b} swears it was {a} who left it open.\n"
-    "They argue about it until two in the morning. Neither of them looks outside.",
+    "{a} swears the gate was shut. {b} swears {a} left it open.\n"
+    "Neither of them looks outside.",
 )
 
 CAMEO_SOLO = (
@@ -165,34 +159,28 @@ DISCOVERY = (
 # Attacked but protected. DRAMATIC names the target; DISCREET gives the same
 # beat without telling the town who the Mafia went for.
 SAVE_NAMED = (
-    "The body is found before dawn, bleeding into the gravel — and then a stranger "
-    "is kneeling over it.\nSleeves up. Hands steady. Nobody catches the face.\n"
-    "{attacked} wakes in their own bed with no idea how close that was.",
+    "A stranger is kneeling over the body before dawn. Sleeves up, hands steady.\n"
+    "{attacked} wakes in their own bed, no idea how close that was.",
 
-    "{attacked} goes down, and {attacked} should stay down.\n"
-    "But someone was already running — a healer, a ghost, a lunatic with a steady "
-    "hand — and the bleeding stops.\n{attacked} is at breakfast in the morning. "
-    "Pale. Alive.",
+    "{attacked} goes down, and should stay down.\n"
+    "Someone was already running. By morning {attacked} is at breakfast. Pale. Alive.",
 
     "They nearly lost {attacked} last night.\n"
-    "Twenty seconds later and this town would be one voice lighter. Somebody here "
-    "bought those twenty seconds and is saying nothing about it.",
+    "Somebody here bought those twenty seconds and is saying nothing about it.",
 
-    "There is blood on {attacked}'s doorstep and no body to go with it.\n"
+    "Blood on {attacked}'s doorstep, and no body to go with it.\n"
     "Someone got there first. Someone always seems to.",
 )
 
 SAVE_QUIET = (
-    "The body is found before dawn, bleeding into the gravel — and then a stranger "
-    "is kneeling over it.\nSleeves up. Hands steady. By sunrise there is no body at "
-    "all, only a dark patch on the stones that nobody can explain.",
+    "A stranger kneels over the body before dawn, sleeves up.\n"
+    "By sunrise there is no body — only a dark patch on the stones.",
 
-    "Something happened last night. There is blood on a doorstep somewhere in this "
-    "town and no name to attach to it.\n"
-    "Somebody was saved. Somebody knows it. Neither of them is talking.",
+    "There is blood on a doorstep somewhere in this town and no name for it.\n"
+    "Somebody was saved. Neither of them is talking.",
 
     "The Mafia went out last night and came back empty-handed.\n"
-    "Not because they missed. Because someone was standing in the way.",
+    "Not because they missed. Because someone was in the way.",
 )
 
 BLOCKED = (
