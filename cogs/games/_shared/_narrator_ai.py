@@ -55,6 +55,8 @@ SYSTEM = (
     "slurs, no real-world people.\n"
     "- Never state or guess anybody's secret role, and never hint at who the "
     "killer is. You do not know, and the players must not think you do.\n"
+    "- Players are real people whose gender you do not know. Refer to them as "
+    "they/them, always, or avoid the pronoun. Never he, she, him or her.\n"
     "- Each beat is one or two short lines of prose. No bullet points, no "
     "headings, no stage directions, no 'Beat 1:' labels."
 )
@@ -80,6 +82,9 @@ def _prompt(*, night: int, alive: int, dead: int, name_saved: bool) -> str:
         f"open with its own atmosphere. Each version is {MIN_BEATS}-{MAX_BEATS} "
         "beats, posted one at a time about three seconds apart, so every beat "
         "should end on a small hook.\n\n"
+        "Give each beat room: two or three sentences, 20 to 50 words, and let "
+        "the last sentence land the turn. Single-line fragments read as notes "
+        "toward a story rather than the story itself.\n\n"
         "Placeholders are filled in later with real player mentions:\n"
         "  {a} {b} {c} - living players with nothing to do with tonight. Use "
         "them for a red herring: somebody hears a scream, fears the worst, and "
@@ -87,8 +92,9 @@ def _prompt(*, night: int, alive: int, dead: int, name_saved: bool) -> str:
         "of the job -- do it every version.\n"
         "  {victim} - the player who died. Only in \"kill\".\n"
         "  {role} - the dead player's revealed role, arriving already bold and "
-        "with its own emoji. Put it alone on the short final line of the last "
-        "beat of \"kill\". Only in \"kill\".\n"
+        "with its own emoji. It goes at the END of the SAME beat that names "
+        "{victim}, after a full stop, never as a beat of its own -- a beat "
+        "containing only a role is not a sentence. Only in \"kill\".\n"
         "  {attacked} - see below.\n\n"
         "The four versions:\n"
         "  \"kill\"    - somebody was killed. Build to it: the approach, the "
@@ -99,9 +105,14 @@ def _prompt(*, night: int, alive: int, dead: int, name_saved: bool) -> str:
         "Name nobody but {a}/{b}/{c}. An empty, uneasy night.\n"
         "  \"quiet\"   - nothing happened. The town waits all night for a "
         "sound that never comes, and finds that harder.\n\n"
-        "Reply with JSON only, exactly: "
-        '{"kill": ["beat", "beat"], "save": [...], "blocked": [...], '
-        '"quiet": [...]}'
+        "Reply with one JSON object and nothing else. It has exactly four keys "
+        "-- kill, save, blocked, quiet -- and each value is a flat array of "
+        f"{MIN_BEATS} to {MAX_BEATS} strings, one string per beat. Never nest an "
+        "array, never put a key name inside an array, and never pack several "
+        "beats into one string:\n"
+        '{"kill": ["first beat", "second beat", "third beat"], '
+        '"save": ["first beat", "second beat", "third beat"], '
+        '"blocked": ["..."], "quiet": ["..."]}'
     )
 
 
@@ -156,8 +167,15 @@ async def generate(
             night=night, alive=alive, dead=dead,
             name_saved=(mode == narrator.DRAMATIC),
         ),
-        max_tokens=1400,
-        temperature=1.05,
+        # Four versions of a night is ~900 tokens of prose, but a reasoning
+        # model bills its thinking against the same allowance and will happily
+        # spend 2800 of them planning. Hence the headroom, and the low effort:
+        # this is atmosphere, not a maths problem. Nothing waits on it anyway.
+        max_tokens=5000,
+        reasoning_effort=llm.setting("LLM_REASONING_EFFORT", "low"),
+        # High enough to stop every night sounding the same, low enough that a
+        # mid-size model still returns the shape it was asked for.
+        temperature=0.95,
     )
     if payload is None:
         return None

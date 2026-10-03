@@ -31,7 +31,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # provider -> (base url, default model)
 PROVIDERS: dict[str, tuple[str, str]] = {
-    "groq": ("https://api.groq.com/openai/v1", "llama-3.3-70b-versatile"),
+    # Groq retired the Llama models; gpt-oss-120b is the strongest text model
+    # it serves now. `GET /models` on your key lists what you can actually use.
+    "groq": ("https://api.groq.com/openai/v1", "openai/gpt-oss-120b"),
     "openrouter": ("https://openrouter.ai/api/v1", "meta-llama/llama-3.3-70b-instruct"),
     "openai": ("https://api.openai.com/v1", "gpt-4o-mini"),
     "together": ("https://api.together.xyz/v1", "meta-llama/Llama-3.3-70B-Instruct-Turbo"),
@@ -92,6 +94,22 @@ def _endpoint_and_model() -> tuple[str, str]:
     return f"{base}/chat/completions", setting("LLM_MODEL") or model
 
 
+# Optional request fields this provider has rejected. `response_format` and
+# `reasoning_effort` are widely but not universally supported -- Groq refuses
+# JSON mode for gpt-oss, for instance -- so the first 400 that mentions one
+# retires it for the process and every later call goes out without it.
+_dropped: set[str] = set()
+
+
+def _optional_fields(json_object: bool, reasoning_effort: str | None) -> dict:
+    fields: dict = {}
+    if json_object:
+        fields["response_format"] = {"type": "json_object"}
+    if reasoning_effort:
+        fields["reasoning_effort"] = reasoning_effort
+    return {k: v for k, v in fields.items() if k not in _dropped}
+
+
 async def chat(
     bot,
     *,
@@ -100,6 +118,7 @@ async def chat(
     max_tokens: int = 900,
     temperature: float = 1.0,
     json_object: bool = False,
+    reasoning_effort: str | None = None,
     timeout: float = DEFAULT_TIMEOUT,
 ) -> str | None:
     """
@@ -117,7 +136,7 @@ async def chat(
         return None
 
     url, model = _endpoint_and_model()
-    payload: dict = {
+    base: dict = {
         "model": model,
         "temperature": temperature,
         "max_tokens": max_tokens,
@@ -126,45 +145,77 @@ async def chat(
             {"role": "user", "content": user},
         ],
     }
-    if json_object:
-        payload["response_format"] = {"type": "json_object"}
-
     headers = {"Content-Type": "application/json"}
     key = setting("LLM_API_KEY")
     if key:
         headers["Authorization"] = f"Bearer {key}"
 
-    try:
-        async with session.post(
-            url,
-            json=payload,
-            headers=headers,
-            timeout=aiohttp.ClientTimeout(total=timeout),
-        ) as resp:
-            if resp.status >= 400:
-                log.warning("LLM %s returned HTTP %s: %s", model, resp.status,
-                            (await resp.text())[:300])
-                return None
-            data = await resp.json(content_type=None)
-    except asyncio.TimeoutError:
-        log.warning("LLM %s timed out after %.0fs", model, timeout)
-        return None
-    except (aiohttp.ClientError, ValueError):
-        log.warning("LLM %s request failed", model, exc_info=True)
-        return None
+    extras = _optional_fields(json_object, reasoning_effort)
 
-    try:
-        return data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError):
-        log.warning("LLM %s sent an unexpected body: %s", model, str(data)[:300])
-        return None
+    # Two attempts at most: the retry exists only to shed an optional field the
+    # provider turned out not to accept.
+    for _ in range(2):
+        try:
+            async with session.post(
+                url,
+                json={**base, **extras},
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=timeout),
+            ) as resp:
+                body = await resp.text() if resp.status >= 400 else None
+                if resp.status == 400 and extras:
+                    log.info(
+                        "LLM %s rejected %s; retrying without it",
+                        model, ", ".join(sorted(extras)),
+                    )
+                    _dropped.update(extras)
+                    extras = {}
+                    continue
+                if resp.status >= 400:
+                    log.warning(
+                        "LLM %s returned HTTP %s: %s", model, resp.status, body[:300]
+                    )
+                    return None
+                data = await resp.json(content_type=None)
+        except asyncio.TimeoutError:
+            log.warning("LLM %s timed out after %.0fs", model, timeout)
+            return None
+        except (aiohttp.ClientError, ValueError):
+            log.warning("LLM %s request failed", model, exc_info=True)
+            return None
+
+        try:
+            choice = data["choices"][0]
+            text = choice["message"]["content"]
+        except (KeyError, IndexError, TypeError):
+            log.warning("LLM %s sent an unexpected body: %s", model, str(data)[:300])
+            return None
+
+        if not text:
+            # A reasoning model can spend the whole allowance thinking and
+            # return nothing at all, which is silent unless we say so.
+            log.warning(
+                "LLM %s returned no text (finish_reason=%s, %s). Raise "
+                "max_tokens or lower LLM_REASONING_EFFORT.",
+                model, choice.get("finish_reason"),
+                (data.get("usage") or {}).get("completion_tokens_details"),
+            )
+            return None
+        return text
+
+    return None
 
 
 _FENCE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$")
 
 
 async def chat_json(bot, *, system: str, user: str, **kwargs) -> dict | None:
-    """`chat` plus JSON parsing. Tolerates a model that wraps it in a code fence."""
+    """
+    `chat` plus JSON parsing. Tolerates a model that wraps it in a code fence.
+
+    JSON mode is only a belt: the model replies with JSON because the prompt
+    says to, so `chat` shedding `response_format` costs nothing here.
+    """
     text = await chat(bot, system=system, user=user, json_object=True, **kwargs)
     if not text:
         return None
