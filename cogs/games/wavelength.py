@@ -8,6 +8,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from cogs._help_registry import HelpEntry
+from cogs.games._shared import _leave
 from cogs.games._shared._core import BaseGame, Palette, active_game, register
 from cogs.games._shared._lobby import LobbyView
 
@@ -75,6 +76,7 @@ class WavelengthGame(BaseGame):
         self.scores: dict[int, int] = {}
         self.order: list[int] = []
         self.round_index = -1
+        self.round_number = 0  # rounds actually played, which leavers can shrink
         self.left = ""
         self.right = ""
         self.target = 0
@@ -84,9 +86,16 @@ class WavelengthGame(BaseGame):
 
     @property
     def psychic(self) -> discord.Member | None:
-        if not self.order:
+        if not self.order or not 0 <= self.round_index < len(self.order):
             return None
-        return self.players.get(self.order[self.round_index % len(self.order)])
+        return self.players.get(self.order[self.round_index])
+
+    @property
+    def rounds_left(self) -> int:
+        """Turns still to come, counting only people who are still here."""
+        return sum(
+            1 for pid in self.order[self.round_index + 1:] if pid in self.players
+        )
 
     @property
     def guessers(self) -> list[discord.Member]:
@@ -99,11 +108,39 @@ class WavelengthGame(BaseGame):
         random.shuffle(self.order)
         self.scores = {pid: 0 for pid in self.players}
 
+    def leave(self, member: discord.abc.User) -> str:
+        """Take a player out mid-game. Returns the line to announce."""
+        name = member.display_name
+        psychic = self.psychic
+        was_psychic = psychic is not None and psychic.id == member.id
+
+        self.drop_player(member)
+        self.guesses.pop(member.id, None)
+        # Dropping their score takes them off the board; the turn order still
+        # holds their id, and next_round() steps over anyone who has gone.
+        self.scores.pop(member.id, None)
+
+        if was_psychic:
+            return (
+                f"\U0001F6AA **{name}** left — they were the Psychic, "
+                "so this round doesn't count."
+            )
+        return f"\U0001F6AA **{name}** left the game."
+
+    def playable(self) -> bool:
+        """A Psychic and at least one guesser left to read them."""
+        return len(self.players) >= 2
+
     def next_round(self) -> bool:
         """Set up the next round. False once everyone has been Psychic once."""
-        self.round_index += 1
-        if self.round_index >= len(self.order):
-            return False
+        # Step over anybody whose turn it would have been but who has left.
+        while True:
+            self.round_index += 1
+            if self.round_index >= len(self.order):
+                return False
+            if self.order[self.round_index] in self.players:
+                break
+        self.round_number += 1
         if not self.unused:
             self.unused = SPECTRUMS.copy()
         self.left, self.right = self.unused.pop(random.randrange(len(self.unused)))
@@ -210,7 +247,7 @@ class RoundView(discord.ui.View):
     def _base_embed(self) -> discord.Embed:
         g = self.game
         return discord.Embed(
-            title=f"\U0001F4E1 Round {g.round_index + 1}/{len(g.order)}",
+            title=f"\U0001F4E1 Round {g.round_number} of {g.round_number + g.rounds_left}",
             description=spectrum_line(g.left, g.right),
             colour=Palette.ROUND,
         )
@@ -259,6 +296,7 @@ class RoundView(discord.ui.View):
         self.clear_items()
         self.add_item(self.guess_btn)
         self.add_item(self.reveal_btn)
+        self.add_item(self.leave_btn)
 
         g = self.game
         await interaction.response.send_message(
@@ -307,6 +345,75 @@ class RoundView(discord.ui.View):
             ephemeral=True,
         )
 
+    @discord.ui.button(
+        label="Leave", style=discord.ButtonStyle.secondary, emoji="\U0001F6AA", row=4
+    )
+    async def leave_btn(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        g = self.game
+        if interaction.user.id not in g.players:
+            return await interaction.response.send_message(
+                "You're not in this game.", ephemeral=True
+            )
+        psychic = g.psychic
+        is_psychic = psychic is not None and psychic.id == interaction.user.id
+        warning = (
+            "You're the **Psychic** this round — leaving scraps it and nobody scores."
+            if is_psychic
+            else "Your guess this round won't count and you'll drop off the scoreboard."
+        )
+
+        async def confirmed(inter: discord.Interaction) -> None:
+            await self.on_departure(inter, g.leave(inter.user), was_psychic=is_psychic)
+
+        await _leave.ask_to_leave(interaction, warning=warning, on_confirm=confirmed)
+
+    async def on_departure(
+        self, interaction: discord.Interaction, note: str, *, was_psychic: bool
+    ) -> None:
+        g = self.game
+        try:
+            await g.channel.send(note, allowed_mentions=discord.AllowedMentions.none())
+        except discord.HTTPException:
+            pass
+        if g.finished:
+            return
+
+        if not g.playable():
+            self.stop()
+            await g.finish()
+            emb = discord.Embed(
+                title="\U0001F4E1 Wavelength — final scores",
+                description=g.scoreboard() or "Nobody left to score.",
+                colour=Palette.REVEAL,
+            )
+            emb.set_footer(text="Not enough players left to carry on.")
+            await g.channel.send(embed=emb)
+            return
+
+        if was_psychic:
+            # Nobody can reveal a spot only the departed knew the clue for.
+            self.stop()
+            if g.message:
+                try:
+                    await g.message.edit(
+                        embed=discord.Embed(
+                            title=f"\U0001F4E1 Round {g.round_number} — abandoned",
+                            description="The Psychic left, so this one doesn't count.",
+                            colour=Palette.OVER,
+                        ),
+                        view=None,
+                    )
+                except discord.HTTPException:
+                    pass
+            await intermission(g)
+            await advance(g)
+            return
+
+        if g.clue is not None and len(g.guesses) >= len(g.guessers):
+            await self.do_reveal()
+        else:
+            await self.refresh_public()
+
     @discord.ui.button(label="Reveal", style=discord.ButtonStyle.danger, emoji="\U0001F440")
     async def reveal_btn(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         g = self.game
@@ -334,7 +441,7 @@ class RoundView(discord.ui.View):
         self.stop()
         g = self.game
         emb = self.reveal_embed()
-        more_rounds = g.round_index + 1 < len(g.order)
+        more_rounds = g.rounds_left > 0
         emb.set_footer(
             text="Next round in a moment…" if more_rounds
             else "That was the last round — final scores coming up…"
@@ -350,7 +457,7 @@ class RoundView(discord.ui.View):
     def reveal_embed(self) -> discord.Embed:
         g = self.game
         emb = discord.Embed(
-            title=f"\U0001F4E1 Round {g.round_index + 1} — the spot was {g.target}",
+            title=f"\U0001F4E1 Round {g.round_number} — the spot was {g.target}",
             description=spectrum_line(g.left, g.right),
             colour=Palette.REVEAL,
         )

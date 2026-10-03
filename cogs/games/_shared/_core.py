@@ -81,6 +81,21 @@ class BaseGame:
         del self.players[member.id]
         return None
 
+    def drop_player(self, member: discord.abc.User) -> bool:
+        """
+        Remove someone from a game already in progress.
+
+        Unlike `remove_player` the host may go: once play has started there is
+        nothing to cancel back to, so the host badge moves to whoever is next
+        rather than trapping them in a game they want to leave.
+        """
+        if member.id not in self.players:
+            return False
+        del self.players[member.id]
+        if member.id == self.host.id and self.players:
+            self.host = next(iter(self.players.values()))
+        return True
+
     # -- lifecycle -------------------------------------------------------
 
     def lobby_embed(self) -> discord.Embed:
