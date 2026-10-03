@@ -80,9 +80,16 @@ async def _pollinations(session, prompt, *, width, height, seed, timeout):
     )
 
 
+# Hugging Face retired api-inference.huggingface.co -- the hostname no longer
+# even resolves -- in favour of the router. This path returns raw image bytes;
+# router.huggingface.co/v1/images/generations is the OpenAI-shaped alternative
+# and hands back base64 in JSON instead, which is more work for no gain here.
+HF_BASE = "https://router.huggingface.co/hf-inference/models"
+
+
 async def _huggingface(session, prompt, *, width, height, seed, timeout):
     model = setting("IMAGE_MODEL") or DEFAULT_MODELS[HUGGINGFACE]
-    base = (setting("IMAGE_BASE_URL") or "https://api-inference.huggingface.co/models").rstrip("/")
+    base = (setting("IMAGE_BASE_URL") or HF_BASE).rstrip("/")
     payload: dict = {"inputs": prompt, "parameters": {"width": width, "height": height}}
     if seed is not None:
         payload["parameters"]["seed"] = seed
