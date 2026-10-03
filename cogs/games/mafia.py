@@ -796,10 +796,14 @@ class VoteView(discord.ui.View):
         g = self.game
         self.stop()
         anyone_voted = bool(g.tally())
+        # Render the final tally before the elimination lands: vote_result()
+        # marks the loser dead, and the card counts "x/len(living)", so doing
+        # this afterwards reported three of two people having voted.
+        final = self.embed()
         voted_out, verdict = g.vote_result()
         if g.message:
             try:
-                await g.message.edit(embed=self.embed(), view=None)
+                await g.message.edit(embed=final, view=None)
             except discord.HTTPException:
                 pass
 
@@ -884,31 +888,77 @@ class RoleRevealView(discord.ui.View):
     def __init__(self, game: MafiaGame) -> None:
         super().__init__(timeout=1800)
         self.game = game
+        self.seen: set[int] = set()  # players who have looked at their card
+
+    def embed(self) -> discord.Embed:
+        g = self.game
+        emb = discord.Embed(
+            title=f"\U0001F576️ Mafia — {g.count} players",
+            description=f"{g.settings.summary()}\neveryone else is a Villager",
+            colour=Palette.LOBBY,
+        )
+        waiting = [p.name for p in g.cast.values() if p.id not in self.seen]
+        if waiting and self.seen:
+            emb.add_field(
+                name=f"Looked ({len(self.seen)}/{len(g.cast)})",
+                value="waiting on " + ", ".join(waiting),
+                inline=False,
+            )
+        emb.set_footer(
+            text="Everyone tap Reveal my role — only you can see it. "
+                 "Night falls once everyone has looked."
+        )
+        return emb
+
+    async def begin(self) -> None:
+        """Night falls. Safe to call without an un-responded interaction."""
+        if self.is_finished():
+            return
+        self.stop()
+        g = self.game
+        if g.message:
+            try:
+                await g.message.edit(
+                    content=None,
+                    embed=discord.Embed(
+                        title="\U0001F3AD Roles are in",
+                        description="Night falls...",
+                        colour=Palette.NIGHT,
+                    ),
+                    view=None,
+                )
+            except discord.HTTPException:
+                pass
+        night = NightView(g)
+        g.message = await g.channel.send(embed=night.embed(), view=night)
 
     @discord.ui.button(label="Reveal my role", style=discord.ButtonStyle.primary, emoji="\U0001F3AD")
     async def reveal(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await send_role_card(self.game, interaction)
 
-    @discord.ui.button(label="Everyone's ready", style=discord.ButtonStyle.success, emoji="▶️")
+        player = self.game.player(interaction.user.id)
+        if player is None or player.id in self.seen:
+            return
+        self.seen.add(player.id)
+
+        # Once everyone has looked there is nothing left to wait for.
+        if self.seen >= set(self.game.cast):
+            return await self.begin()
+        if self.game.message:
+            try:
+                await self.game.message.edit(embed=self.embed(), view=self)
+            except discord.HTTPException:
+                pass
+
+    @discord.ui.button(label="Start anyway", style=discord.ButtonStyle.success, emoji="▶️")
     async def go(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        """Host override, for when somebody has wandered off."""
         if not self.game.is_host(interaction.user):
             return await interaction.response.send_message(
                 "Only the host can begin.", ephemeral=True
             )
-        self.stop()
-        night = NightView(self.game)
-        await interaction.response.edit_message(
-            content=None,
-            embed=discord.Embed(
-                title="\U0001F3AD Roles are in",
-                description="Night falls...",
-                colour=Palette.NIGHT,
-            ),
-            view=None,
-        )
-        self.game.message = await self.game.channel.send(
-            embed=night.embed(), view=night
-        )
+        await interaction.response.defer()
+        await self.begin()
 
 
 class Mafia(commands.Cog):
@@ -988,13 +1038,9 @@ class Mafia(commands.Cog):
                 return await inter.response.send_message(problem, ephemeral=True)
             game.assign_roles()
             view = RoleRevealView(game)
-            embed = discord.Embed(
-                title=f"\U0001F576️ Mafia — {game.count} players",
-                description=f"{game.settings.summary()}\neveryone else is a Villager",
-                colour=Palette.LOBBY,
+            await inter.response.edit_message(
+                content=None, embed=view.embed(), view=view
             )
-            embed.set_footer(text="Everyone tap Reveal my role — only you can see it.")
-            await inter.response.edit_message(content=None, embed=embed, view=view)
             game.message = await inter.original_response()
 
         lobby = LobbyView(game, on_start=on_start, on_setup=on_setup, setup_label="Roles")
